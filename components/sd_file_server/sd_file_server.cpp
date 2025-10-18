@@ -139,7 +139,7 @@ void SDFileServer::append_json_row(std::string &json, bool &first, const sd_mmc_
 // Refactored to handle JSON response instead of HTML
 void SDFileServer::handle_index(AsyncWebServerRequest *request, const std::string &path) const {
   AsyncResponseStream *response = request->beginResponseStream("application/json");
-  response->setCode(200);
+  response->set_status_code(200);
 
   std::string json = "{\n";
 
