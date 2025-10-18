@@ -89,92 +89,102 @@ void SDFileServer::handle_get(AsyncWebServerRequest *request) const {
   handle_index(request, path);
 }
 
-void SDFileServer::write_row(AsyncResponseStream *response, const sd_mmc_card::FileInfo &info) const {
-  std::string uri = "/" + Path::join(this->url_prefix_, Path::remove_root_path(info.path, this->root_path_));
-  std::string file_name = Path::file_name(info.path);
+#include <string>
+#include <vector>
 
-  response->print("<tr><td>");
-  if (info.is_directory) {
-    response->print("<a href=\"");
-    response->print(uri.c_str());
-    response->print("\">");
-    response->print(file_name.c_str());
-    response->print("</a>");
-  } else {
-    response->print(file_name.c_str());
-  }
-  response->print("</td><td>");
+// Assuming necessary includes for Path, sd_mmc_card, AsyncWebServerRequest, etc., are already present.
 
-  if (info.is_directory) {
-    response->print("Folder");
-  } else {
-    response->print("<span class=\"file-type\">");
-    response->print(Path::file_type(file_name).c_str());
-    response->print("</span>");
-  }
-
-  response->print("</td><td>");
-  if (!info.is_directory) {
-    response->print(sd_mmc_card::format_size(info.size).c_str());
-  }
-
-  response->print("</td><td><div class=\"file-actions\">");
-  if (!info.is_directory) {
-    if (this->download_enabled_) {
-      response->print("<button onClick=\"download_file('");
-      response->print(uri.c_str());
-      response->print("','");
-      response->print(file_name.c_str());
-      response->print("')\">Download</button>");
-    }
-    if (this->deletion_enabled_) {
-      response->print("<button onClick=\"delete_file('");
-      response->print(uri.c_str());
-      response->print("')\">Delete</button>");
+// Helper function to escape JSON strings (for names and URIs that might contain special characters)
+std::string escape_json(const std::string &s) {
+  std::string res;
+  for (char c : s) {
+    if (c == '"') {
+      res += "\\\"";
+    } else if (c == '\\') {
+      res += "\\\\";
+    } else if (c == '\n') {
+      res += "\\n";
+    } else if (c == '\r') {
+      res += "\\r";
+    } else if (c == '\t') {
+      res += "\\t";
+    } else {
+      res += c;
     }
   }
-  response->print("<div></td></tr>");
+  return res;
 }
 
-void SDFileServer::handle_index(AsyncWebServerRequest *request, const std::string &path) const {
-  AsyncResponseStream *response = request->beginResponseStream("text/html");
-  response->print(
-    "<!DOCTYPE html><html lang=\"en\"><head><meta charset=UTF-8><meta name=viewport content=\"width=device-width, initial-scale=1,user-scalable=no\">"
-    "<title>SD Card Files</title><style>body{font-family:'Segoe UI',system-ui,sans-serif;margin:0;padding:2rem;background:#f5f5f7;color:#1d1d1f;}"
-    "h1{color:#0066cc;margin-bottom:1.5rem;display:flex;align-items:center;gap:1rem;}"
-    ".container{max-width:1200px;margin:0 auto;background:white;border-radius:12px;box-shadow:0 4px 12px rgba(0,0,0,0.1);padding:2rem;}"
-    "table{width:100%;border-collapse:collapse;margin-top:1.5rem;}th,td{padding:12px;text-align:left;border-bottom:1px solid #e0e0e0;}"
-    "th{background:#f8f9fa;font-weight:500;}.file-actions{display:flex;gap:8px;}button{padding:6px 12px;border:none;border-radius:6px;background:#0066cc;color:white;cursor:pointer;transition:background 0.2s;}"
-    "button:hover{background:#0052a3;}.upload-form{margin-bottom:2rem;padding:1rem;background:#f8f9fa;border-radius:8px;}.upload-form input[type=file]{margin-right:1rem;}"
-    ".breadcrumb{margin-bottom:1.5rem;font-size:0.9rem;color:#666;}.breadcrumb a{color:#0066cc;text-decoration:none;}.breadcrumb a:hover{text-decoration:underline;}.breadcrumb a:not(:last-child)::after{display:inline-block;margin:0 .25rem;content:">";}"
-    ".folder{color:#0066cc;font-weight:500;}.file-type{color:#666;font-size:0.9rem;}.header-actions{display:flex;align-items:center;gap:1rem;}"
-    ".header-actions button{background:#4CAF50;}.header-actions button:hover{background:#45a049;}</style></head><body><div class=container><div class=header-actions><h1>SD Card Files</h1><button onclick=\"window.location.href='/'\">Go to web server</button></div><div class=breadcrumb><a href='/'>Home</a>");
+// Refactored to append a JSON object for a file/directory to the JSON string
+void SDFileServer::append_json_row(std::string &json, bool &first, const sd_mmc_card::FileInfo &info) const {
+  if (!first) {
+    json += ",\n";
+  }
+  first = false;
 
+  std::string file_name = Path::file_name(info.path);
+  std::string uri = "/" + Path::join(this->url_prefix_, Path::remove_root_path(info.path, this->root_path_));
+
+  json += "  {\n";
+  json += "    \"name\": \"" + escape_json(file_name) + "\",\n";
+  json += "    \"is_directory\": " + (info.is_directory ? std::string("true") : std::string("false")) + ",\n";
+  if (!info.is_directory) {
+    json += "    \"size\": " + std::to_string(info.size) + ",\n";
+    json += "    \"size_formatted\": \"" + escape_json(sd_mmc_card::format_size(info.size)) + "\",\n";
+  }
+  json += "    \"uri\": \"" + escape_json(uri) + "\"\n";
+  json += "  }";
+}
+
+// Refactored to handle JSON response instead of HTML
+void SDFileServer::handle_index(AsyncWebServerRequest *request, const std::string &path) const {
+  AsyncResponseStream *response = request->beginResponseStream("application/json");
+  response->setCode(200);
+
+  std::string json = "{\n";
+
+  // Add current path
+  json += "  \"current_path\": \"" + escape_json(path) + "\",\n";
+
+  // Add enabled flags (for client-side handling)
+  json += "  \"upload_enabled\": " + (this->upload_enabled_ ? std::string("true") : std::string("false")) + ",\n";
+  json += "  \"download_enabled\": " + (this->download_enabled_ ? std::string("true") : std::string("false")) + ",\n";
+  json += "  \"deletion_enabled\": " + (this->deletion_enabled_ ? std::string("true") : std::string("false")) + ",\n";
+
+  // Build breadcrumbs array
   std::string current_path = "/";
   std::string relative_path = Path::join(this->url_prefix_, Path::remove_root_path(path, this->root_path_));
   std::vector<std::string> parts = Path::split_path(relative_path);
+
+  json += "  \"breadcrumbs\": [\n";
+  bool first_breadcrumb = true;
   for (const auto &part : parts) {
     if (!part.empty()) {
       current_path = Path::join(current_path, part);
-      response->print("<a href=\"");
-      response->print(current_path.c_str());
-      response->print("\">");
-      response->print(part.c_str());
-      response->print("</a>");
+      if (!first_breadcrumb) {
+        json += ",\n";
+      }
+      first_breadcrumb = false;
+      json += "    {\n";
+      json += "      \"name\": \"" + escape_json(part) + "\",\n";
+      json += "      \"url\": \"" + escape_json(current_path) + "\"\n";
+      json += "    }";
     }
   }
-  response->print("</div>");
+  json += "\n  ],\n";
 
-  if (this->upload_enabled_)
-    response->print("<div class=\"upload-form\"><form method=\"POST\" enctype=\"multipart/form-data\"><input type=\"file\" name=\"file\"><input type=\"submit\" value=\"upload\"></form></div>");
-
-  response->print("<table><thead><tr><th>Name</th><th>Type</th><th>Size</th><th>Actions</th></tr></thead><tbody>");
-
+  // Build files array
+  json += "  \"files\": [\n";
   auto entries = this->sd_mmc_card_->list_directory_file_info(path, 0);
-  for (const auto &entry : entries)
-    write_row(response, entry);
+  bool first_file = true;
+  for (const auto &entry : entries) {
+    append_json_row(json, first_file, entry);
+  }
+  json += "\n  ]\n";
 
-  response->print("</tbody></table><script>function delete_file(path){fetch(path,{method:'DELETE'});}function download_file(path,filename){fetch(path).then(response=>response.blob()).then(blob=>{const link=document.createElement('a');link.href=URL.createObjectURL(blob);link.download=filename;link.click();}).catch(console.error);} </script></body></html>");
+  json += "}";
+
+  response->print(json.c_str());
   request->send(response);
 }
 
@@ -280,23 +290,6 @@ std::string Path::extension(const std::string &file) {
   size_t pos = file.find_last_of('.');
   if (pos == std::string::npos) return "";
   return file.substr(pos + 1);
-}
-
-std::string Path::file_type(const std::string &file) {
-  static const std::map<std::string, std::string> file_types = {
-      {"mp3", "Audio (MP3)"}, {"wav", "Audio (WAV)"}, {"png", "Image (PNG)"}, {"jpg", "Image (JPG)"},
-      {"jpeg", "Image (JPEG)"}, {"bmp", "Image (BMP)"}, {"txt", "Text (TXT)"}, {"log", "Text (LOG)"},
-      {"csv", "Text (CSV)"}, {"html", "Web (HTML)"}, {"css", "Web (CSS)"}, {"js", "Web (JS)"},
-      {"json", "Data (JSON)"}, {"xml", "Data (XML)"}, {"zip", "Archive (ZIP)"}, {"gz", "Archive (GZ)"},
-      {"tar", "Archive (TAR)"}, {"mp4", "Video (MP4)"}, {"avi", "Video (AVI)"}, {"webm", "Video (WEBM)"}};
-
-  std::string ext = Path::extension(file);
-  if (ext.empty()) return "File";
-
-  std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return std::tolower(c); });
-  auto it = file_types.find(ext);
-  if (it != file_types.end()) return it->second;
-  return "File (" + ext + ")";
 }
 
 std::string Path::mime_type(const std::string &file) {

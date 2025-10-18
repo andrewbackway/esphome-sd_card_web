@@ -58,6 +58,4 @@ esp32:
 ```
 
 ## Contributors
-[<img src="https://github.com/elproko.png" width="30px;" style="border-radius: 50%;" title="elproko"/>](https://github.com/elproko)
-[<img src="https://github.com/youkorr.png" width="30px;" style="border-radius: 50%;" title="youkoor"/>](https://github.com/youkorr)
-[<img src="https://github.com/Yax.png" width="30px;" style="border-radius: 50%;" title="Yax"/>](https://github.com/Yax)
+https://github.com/n-serrette/esphome_sd_card
