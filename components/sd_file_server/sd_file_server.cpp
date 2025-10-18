@@ -148,7 +148,7 @@ void SDFileServer::handle_index(AsyncWebServerRequest *request, const std::strin
   // Add enabled flags (for client-side handling)
   json += "  \"upload_enabled\": " + (this->upload_enabled_ ? std::string("true") : std::string("false")) + ",\n";
   json += "  \"download_enabled\": " + (this->download_enabled_ ? std::string("true") : std::string("false")) + ",\n";
-  json += "  \"deletion_enabled\": " + (this->deletion_enabled_ ? std::string("true") : std::string("false")) + ",\n";
+  json += "  \"delete_enabled\": " + (this->deletion_enabled_ ? std::string("true") : std::string("false")) + ",\n";
 
   // Build breadcrumbs array
   std::string current_path = "/";
@@ -173,7 +173,7 @@ void SDFileServer::handle_index(AsyncWebServerRequest *request, const std::strin
   json += "\n  ],\n";
 
   // Build files array
-  json += "  \"files\": [\n";
+  json += "  \"items\": [\n";
   auto entries = this->sd_mmc_card_->list_directory_file_info(path, 0);
   bool first_file = true;
   for (const auto &entry : entries) {
