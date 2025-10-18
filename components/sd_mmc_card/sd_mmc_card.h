@@ -96,19 +96,12 @@ class SdMmc : public Component {
   bool mode_1bit_;
   GPIOPin *power_ctrl_pin_{nullptr};
 
-#ifdef USE_ESP_IDF
   sdmmc_card_t *card_;
-#endif
 #ifdef USE_SENSOR
   std::vector<FileSizeSensor> file_size_sensors_{};
 #endif
   void update_sensors();
-#ifdef USE_ESP32_FRAMEWORK_ARDUINO
-  std::string sd_card_type_to_string(int) const;
-#endif
-#ifdef USE_ESP_IDF
   std::string sd_card_type() const;
-#endif
   std::vector<FileInfo> &list_directory_file_info_rec(const char *path, uint8_t depth, std::vector<FileInfo> &list);
   static std::string error_code_to_string(ErrorCode);
 };
