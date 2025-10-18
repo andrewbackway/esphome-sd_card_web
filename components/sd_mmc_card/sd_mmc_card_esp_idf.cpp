@@ -1,6 +1,5 @@
 #include "sd_mmc_card.h"
 
-#ifdef USE_ESP_IDF
 #include "math.h"
 #include "esphome/core/log.h"
 #include "esp_vfs.h"
@@ -256,5 +255,3 @@ void SdMmc::update_sensors() {
 
 }  // namespace sd_mmc_card
 }  // namespace esphome
-
-#endif  // USE_ESP_IDF

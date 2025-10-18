@@ -1,10 +1,12 @@
 esphome:
-  name: sd-card-arduino
+  name: sd-card-esp-idf
 
 esp32:
   board: esp32dev
   framework:
-    type: arduino
+    type: esp-idf
+    sdkconfig_options:
+      CONFIG_FATFS_LFN_STACK: "y"
 
 external_components:
   - source: components
@@ -28,11 +30,11 @@ logger:
 
 globals:
   - id: capture_switch_state
-    type: boolean
+    type: bool
     restore_value: false
     initial_value: "false"
   - id: await_capture_state
-    type: boolean
+    type: bool
     restore_value: false
     initial_value: "false"
 
@@ -87,9 +89,6 @@ esp32_camera:
                 path: "/test"
             - sd_mmc_card.remove_directory:
                 path: "/test"
-            - lambda: |
-                for (auto const & file : id(esp_camera_sd_card)->list_directory("/", 1))
-                    ESP_LOGE("   ", "File: %s\n", file.c_str());
 
 switch:
   - platform: template
@@ -137,6 +136,8 @@ text_sensor:
   - platform: sd_mmc_card
     sd_card_type:
       name: "SD card type"
+
+web_server:
 
 sd_file_server:
   id: file_server
