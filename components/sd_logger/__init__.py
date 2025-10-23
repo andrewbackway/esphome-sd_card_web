@@ -18,6 +18,10 @@ CONF_BACKOFF_INITIAL = "backoff_initial"
 CONF_BACKOFF_MAX = "backoff_max"
 CONF_SENSORS = "sensors"
 
+CONF_PING_URL = "ping_url"
+CONF_PING_INTERVAL = "ping_interval"
+CONF_PING_TIMEOUT = "ping_timeout"
+
 CONF_SYNC_ONLINE = "sync_online"
 CONF_SYNC_SENDING_BACKLOG = "sync_sending_backlog"
 
@@ -31,6 +35,10 @@ CONFIG_SCHEMA = cv.Schema(
         cv.Required(CONF_LOG_PATH): cv.string,
         cv.Required(CONF_BACKOFF_INITIAL): cv.positive_time_period_milliseconds,
         cv.Required(CONF_BACKOFF_MAX): cv.positive_time_period_milliseconds,
+
+        cv.Optional(CONF_PING_URL, default=""): cv.string,
+        cv.Optional(CONF_PING_INTERVAL, default="30s"): cv.positive_time_period_milliseconds,
+        cv.Optional(CONF_PING_TIMEOUT,  default="3s"):  cv.positive_time_period_milliseconds,
 
         cv.Required(CONF_SENSORS): cv.ensure_list(cv.use_id(sensor_comp.Sensor)),
 
@@ -58,6 +66,11 @@ async def to_code(config):
     cg.add(var.set_log_path(config[CONF_LOG_PATH]))
     cg.add(var.set_backoff_initial_ms(config[CONF_BACKOFF_INITIAL]))
     cg.add(var.set_backoff_max_ms(config[CONF_BACKOFF_MAX]))
+
+    if CONF_PING_URL in config:
+        cg.add(var.set_ping_url(config[CONF_PING_URL]))
+    cg.add(var.set_ping_interval_ms(config[CONF_PING_INTERVAL].total_milliseconds))
+    cg.add(var.set_ping_timeout_ms(config[CONF_PING_TIMEOUT].total_milliseconds))
 
     # Attach sensors
     sensor_vec = []

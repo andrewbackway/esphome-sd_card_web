@@ -19,6 +19,64 @@ namespace sd_logger {
 
 static const char* const TAG = "sd_logger";
 
+// ===== Component =====
+void SdLogger::setup() {
+  ESP_LOGI(TAG, "setup()");
+  if (this->log_path_.empty()) this->log_path_ = "/sdcard/logs";
+  ensure_dir_(this->log_path_);
+
+  this->live_queue_ = xQueueCreate(16, sizeof(LiveItem));
+  if (!this->live_queue_) ESP_LOGE(TAG, "create live queue failed");
+
+  xTaskCreatePinnedToCore(&SdLogger::task_live_entry_, "sdlog_live", 6 * 1024,
+                          this, 4, &this->task_live_, APP_CPU_NUM);
+  xTaskCreatePinnedToCore(&SdLogger::task_backlog_entry_, "sdlog_backlog",
+                          7 * 1024, this, 3, &this->task_backlog_, APP_CPU_NUM);
+
+  publish_sync_online_(false);
+  publish_sync_backlog_(false);
+}
+
+void SdLogger::loop() {
+  if (!time_valid_()) {
+    this->have_started_ = false;
+    return;
+  }
+
+  uint32_t now = (uint32_t)this->time_->now().timestamp;
+  if (!this->have_started_) {
+    this->start_valid_epoch_ = now;
+    this->have_started_ = true;
+    this->last_tick_window_ = 0;
+    ESP_LOGI(TAG, "SNTP valid at %u, starting in 30s", (unsigned)now);
+    return;
+  }
+  if (now < (this->start_valid_epoch_ + 30)) return;
+
+  uint32_t win = window_start_(now);
+  if (win == this->last_tick_window_) return;
+  this->last_tick_window_ = win;
+
+  std::string payload;
+  if (!this->build_payload_json_(payload)) {
+    ESP_LOGW(TAG, "build_payload_json failed; skip tick");
+    return;
+  }
+
+  if (this->sync_online_) {
+    LiveItem it{payload};
+    if (xQueueSend(this->live_queue_, &it, 0) != pdPASS) {
+      ESP_LOGW(TAG, "live queue full; spilling to SD");
+      if (!write_window_file_(payload))
+        ESP_LOGE(TAG, "spill-to-SD failed; dropping");
+    }
+  } else {
+    if (!write_window_file_(payload)) {
+      ESP_LOGE(TAG, "SD write failed; dropping tick");
+    }
+  }
+}
+
 // ===== Utilities =====
 static std::string mac_as_device_id_() {
   uint8_t mac[6];
@@ -115,64 +173,6 @@ static bool atomic_write_(const std::string& path, const std::string& data) {
   }
 
   return true;
-}
-
-// ===== Component =====
-void SdLogger::setup() {
-  ESP_LOGI(TAG, "setup()");
-  if (this->log_path_.empty()) this->log_path_ = "/sdcard/logs";
-  ensure_dir_(this->log_path_);
-
-  this->live_queue_ = xQueueCreate(16, sizeof(LiveItem));
-  if (!this->live_queue_) ESP_LOGE(TAG, "create live queue failed");
-
-  xTaskCreatePinnedToCore(&SdLogger::task_live_entry_, "sdlog_live", 6 * 1024,
-                          this, 4, &this->task_live_, APP_CPU_NUM);
-  xTaskCreatePinnedToCore(&SdLogger::task_backlog_entry_, "sdlog_backlog",
-                          7 * 1024, this, 3, &this->task_backlog_, APP_CPU_NUM);
-
-  publish_sync_online_(false);
-  publish_sync_backlog_(false);
-}
-
-void SdLogger::loop() {
-  if (!time_valid_()) {
-    this->have_started_ = false;
-    return;
-  }
-
-  uint32_t now = (uint32_t)this->time_->now().timestamp;
-  if (!this->have_started_) {
-    this->start_valid_epoch_ = now;
-    this->have_started_ = true;
-    this->last_tick_window_ = 0;
-    ESP_LOGI(TAG, "SNTP valid at %u, starting in 30s", (unsigned)now);
-    return;
-  }
-  if (now < (this->start_valid_epoch_ + 30)) return;
-
-  uint32_t win = window_start_(now);
-  if (win == this->last_tick_window_) return;
-  this->last_tick_window_ = win;
-
-  std::string payload;
-  if (!this->build_payload_json_(payload)) {
-    ESP_LOGW(TAG, "build_payload_json failed; skip tick");
-    return;
-  }
-
-  if (this->sync_online_) {
-    LiveItem it{payload};
-    if (xQueueSend(this->live_queue_, &it, 0) != pdPASS) {
-      ESP_LOGW(TAG, "live queue full; spilling to SD");
-      if (!write_window_file_(payload))
-        ESP_LOGE(TAG, "spill-to-SD failed; dropping");
-    }
-  } else {
-    if (!write_window_file_(payload)) {
-      ESP_LOGE(TAG, "SD write failed; dropping tick");
-    }
-  }
 }
 
 // ===== internals =====
@@ -299,6 +299,49 @@ bool SdLogger::send_http_put_(const std::string& body, int* http_status,
   return status == 200 || status == 201;
 }
 
+bool SdLogger::send_http_ping_(int* http_status, std::string* resp_err) {
+  if (http_status) *http_status = -1;
+  if (resp_err) resp_err->clear();
+
+  // Pick ping URL; fall back to upload_url_ if not provided.
+  const std::string& url =
+      this->ping_url_.empty() ? this->upload_url_ : this->ping_url_;
+  if (url.empty()) {
+    if (resp_err) *resp_err = "no ping_url/upload_url configured";
+    return false;
+  }
+
+  esp_http_client_config_t cfg{};
+  cfg.url = url.c_str();
+  cfg.method = HTTP_METHOD_GET;  // GET is broadly allowed; HEAD often blocked
+  cfg.timeout_ms = (int)this->ping_timeout_ms_;
+  cfg.transport_type = HTTP_TRANSPORT_OVER_SSL;  // works for http/https
+  cfg.skip_cert_common_name_check = true;        // per your spec+
+  esp_http_client_handle_t client = esp_http_client_init(&cfg);
+  if (!client) {
+    if (resp_err) *resp_err = "http_client_init failed";
+    return false;
+  }
+  // Keep it cheap.
+  esp_http_client_set_header(client, "Accept", "*/*");
+  if (!this->bearer_token_.empty())
+    esp_http_client_set_header(client, "Authorization",
+                               this->bearer_token_.c_str());
+  esp_http_client_set_header(client, "Connection", "close");
+  +esp_err_t err = esp_http_client_perform(client);
+  bool ok = false;
+  if (err == ESP_OK) {
+    int code = esp_http_client_get_status_code(client);
+    if (http_status) *http_status = code;
+    // Consider 2xx and 3xx as "reachable"
+    ok = (code >= 200 && code < 400);
+  } else {
+    if (resp_err) *resp_err = esp_err_to_name(err);
+  }
+  esp_http_client_cleanup(client);
+  return ok;
+}
+
 bool SdLogger::has_backlog_files_() {
   DIR* dir = opendir(this->log_path_.c_str());
   if (!dir) return false;
@@ -388,8 +431,19 @@ void SdLogger::task_backlog_entry_(void* param) {
 
   for (;;) {
     if (!self->sync_online_) {
-      vTaskDelay(pdMS_TO_TICKS(500));
-      continue;
+      int status = -1;
+      std::string err;
+      bool pong = self->send_http_ping_(&status, &err);
+      if (pong) {
+        self->publish_sync_online_(true);
+        // Clear any backlog backoff so we start promptly.
+        self->backlog_backoff_ms_ = 0;
+      } else {
+        self->publish_sync_online_(false);
+        // Sleep until next ping attempt.
+        vTaskDelay(pdMS_TO_TICKS(self->ping_interval_ms_));
+        continue;
+      }
     }
 
     if (!self->has_backlog_files_()) {

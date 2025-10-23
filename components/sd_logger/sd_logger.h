@@ -35,6 +35,11 @@ class SdLogger : public Component {
   void set_sync_online_binary_sensor(binary_sensor::BinarySensor *b) { this->sync_online_bs_ = b; }
   void set_sync_sending_backlog_binary_sensor(binary_sensor::BinarySensor *b) { this->sync_sending_backlog_bs_ = b; }
 
+  void set_ping_url(const std::string &u) { this->ping_url_ = u; }
+  void set_ping_interval_ms(uint32_t ms) { this->ping_interval_ms_ = ms; }
+  void set_ping_timeout_ms(uint32_t ms) { this->ping_timeout_ms_ = ms; }
+  bool send_http_ping_(int *http_status, std::string *resp_err);
+
   void setup() override;
   void loop() override;
   float get_setup_priority() const override { return setup_priority::AFTER_WIFI; }
@@ -69,6 +74,9 @@ class SdLogger : public Component {
   std::string log_path_;
   uint32_t backoff_initial_ms_{30000};
   uint32_t backoff_max_ms_{15 * 60 * 1000};
+  std::string ping_url_;               
+  uint32_t    ping_interval_ms_{10000};
+  uint32_t    ping_timeout_ms_{3000};  
 
   bool have_started_{false};
   uint32_t start_valid_epoch_{0};
