@@ -3,11 +3,11 @@ import esphome.config_validation as cv
 from esphome.components import time as time_comp
 from esphome.components import sensor as sensor_comp
 from esphome.components import binary_sensor as binary_sensor_comp
-from esphome.const import (
-    CONF_ID
-)
+from esphome.const import CONF_ID
 
 AUTO_LOAD = ["sensor", "binary_sensor", "time", "json"]
+CODEOWNERS = ["@andrew-b"]
+
 sd_logger_ns = cg.esphome_ns.namespace("sd_logger")
 SdLogger = sd_logger_ns.class_("SdLogger", cg.Component)
 
@@ -21,14 +21,12 @@ CONF_SENSORS = "sensors"
 CONFIG_SCHEMA = cv.Schema(
     {
         cv.GenerateID(): cv.declare_id(SdLogger),
-
         cv.Required("time_id"): cv.use_id(time_comp.RealTimeClock),
         cv.Required(CONF_UPLOAD_URL): cv.string,
         cv.Optional(CONF_BEARER_TOKEN, default=""): cv.string,
         cv.Required(CONF_LOG_PATH): cv.string,
         cv.Required(CONF_BACKOFF_INITIAL): cv.positive_time_period_milliseconds,
         cv.Required(CONF_BACKOFF_MAX): cv.positive_time_period_milliseconds,
-
         cv.Required(CONF_SENSORS): cv.ensure_list(cv.use_id(sensor_comp.Sensor)),
     }
 )
@@ -37,26 +35,29 @@ async def to_code(config):
     var = cg.new_Pvariable(config[CONF_ID])
     await cg.register_component(var, config)
 
+    # time
     time_var = await cg.get_variable(config["time_id"])
     cg.add(var.set_time(time_var))
 
+    # options
     cg.add(var.set_upload_url(config[CONF_UPLOAD_URL]))
     cg.add(var.set_bearer_token(config[CONF_BEARER_TOKEN]))
     cg.add(var.set_log_path(config[CONF_LOG_PATH]))
     cg.add(var.set_backoff_initial_ms(config[CONF_BACKOFF_INITIAL]))
     cg.add(var.set_backoff_max_ms(config[CONF_BACKOFF_MAX]))
 
-    # Attach sensors
+    # sensors vector
+    sensor_vec = []
     for s in config[CONF_SENSORS]:
-        sensor_var = await cg.get_variable(s)
-        cg.add(var.add_sensor(sensor_var))
+        sv = await cg.get_variable(s)
+        sensor_vec.append(sv)
+    cg.add(var.set_sensors(sensor_vec))
 
-    # Auto-create "Sync Online" binary sensor
-    sync_online = binary_sensor_comp.BinarySensor.new()
-    sync_online.set_name("Sync Online")
+    # Auto-create binary sensors (no YAML required)
+    # Use the helper to create and register proper entities
+    sync_online = binary_sensor_comp.binary_sensor_schema(name="Sync Online").instantiate(None)
+    sync_backlog = binary_sensor_comp.binary_sensor_schema(name="Sync Sending Backlog").instantiate(None)
+    await binary_sensor_comp.register_binary_sensor(sync_online, {})
+    await binary_sensor_comp.register_binary_sensor(sync_backlog, {})
     cg.add(var.set_sync_online_binary_sensor(sync_online))
-
-    # Auto-create "Sync Sending Backlog" binary sensor
-    sync_backlog = binary_sensor_comp.BinarySensor.new()
-    sync_backlog.set_name("Sync Sending Backlog")
     cg.add(var.set_sync_sending_backlog_binary_sensor(sync_backlog))
