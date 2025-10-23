@@ -57,6 +57,7 @@ void SDLogger::add_tracked_sensor(sensor::Sensor *s) {
 }
 
 bool SDLogger::ensure_log_dir_() {
+  ESP_LOGD(TAG, "Ensuring log dir at: %s", this->log_path_.c_str());
   struct stat st {};
   if (stat(this->log_path_.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) return true;
   int res = mkdir(this->log_path_.c_str(), 0775);
@@ -66,6 +67,7 @@ bool SDLogger::ensure_log_dir_() {
 }
 
 bool SDLogger::list_files_(std::vector<std::string> &out) {
+  ESP_LOGD(TAG, "Listing files in: %s", this->log_path_.c_str());
   DIR *dir = opendir(this->log_path_.c_str());
   if (!dir) return false;
   struct dirent *ent;
@@ -79,6 +81,7 @@ bool SDLogger::list_files_(std::vector<std::string> &out) {
 }
 
 bool SDLogger::read_file_(const std::string &path, std::string &out) {
+  ESP_LOGD(TAG, "Reading file: %s", path.c_str());
   FILE *fp = fopen(path.c_str(), "rb");
   if (!fp) return false;
   char buf[2048];
@@ -91,6 +94,7 @@ bool SDLogger::read_file_(const std::string &path, std::string &out) {
 }
 
 bool SDLogger::delete_file_(const std::string &path) {
+  ESP_LOGD(TAG, "Deleting file: %s", path.c_str());
   int r = remove(path.c_str());
   if (r != 0) {
     ESP_LOGW(TAG, "Failed to delete %s (errno=%d)", path.c_str(), errno);
@@ -226,6 +230,8 @@ void SDLogger::upload_task_trampoline_(void *param) {
 }
 
 void SDLogger::run_upload_task_() {
+  ESP_LOGD(TAG, "Upload task started");
+  
   std::vector<std::string> files;
   bool listed = this->list_files_(files);
   if (!listed || files.empty()) {
@@ -274,6 +280,8 @@ void SDLogger::run_upload_task_() {
 }
 
 void SDLogger::write_csv_line_(const std::string &sensor_object_id, float value) {
+  ESP_LOGD(TAG, "Logging: %s = %.6f", sensor_object_id.c_str(), value);
+
   time_t now_ts = 0;
   if (this->time_ && this->time_->now().is_valid()) {
     now_ts = this->time_->now().timestamp;
