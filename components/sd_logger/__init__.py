@@ -1,9 +1,11 @@
 import esphome.codegen as cg
 import esphome.config_validation as cv
-from esphome.const import CONF_ID
 from esphome.components import time as time_comp
 from esphome.components import sensor as sensor_comp
 from esphome.components import binary_sensor as binary_sensor_comp
+from esphome.const import (
+    CONF_ID
+)
 
 AUTO_LOAD = ["sensor", "binary_sensor", "time", "json"]
 sd_logger_ns = cg.esphome_ns.namespace("sd_logger")
@@ -48,13 +50,13 @@ async def to_code(config):
     for s in config[CONF_SENSORS]:
         sensor_var = await cg.get_variable(s)
         cg.add(var.add_sensor(sensor_var))
+        
+    # Auto-create "Sync Online" binary sensor
+    sync_online = cg.new_Pvariable(cg.generate_id("sd_logger_sync_online"))
+    sync_online.set_name(f"{config[CONF_ID]} Sync Online")
+    cg.add(var.set_sync_online_binary_sensor(sync_online))
 
-    # Create binary sensors automatically
-    sync_online = binary_sensor_comp.new_binary_sensor({
-        "name": "Sync Online"
-    })
-    sync_backlog = binary_sensor_comp.new_binary_sensor({
-        "name": "Sync Sending Backlog"
-    })
-    cg.add(var.set_sync_online_binary_sensor(await sync_online))
-    cg.add(var.set_sync_sending_backlog_binary_sensor(await sync_backlog))
+    # Auto-create "Sync Sending Backlog" binary sensor
+    sync_backlog = cg.new_Pvariable(cg.generate_id("sd_logger_sync_backlog"))
+    sync_backlog.set_name(f"{config[CONF_ID]} Sending Backlog")
+    cg.add(var.set_sync_sending_backlog_binary_sensor(sync_backlog))
