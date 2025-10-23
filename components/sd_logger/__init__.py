@@ -53,12 +53,17 @@ async def to_code(config):
         sensor_vec.append(sv)
     cg.add(var.set_sensors(sensor_vec))
     
-    # Auto-create "Sync Online" binary sensor
-    sync_online = binary_sensor_comp.BinarySensor.new()
-    sync_online.set_name("Sync Online")
+    # Auto-create Sync Online binary sensor
+    sync_online = binary_sensor_comp.new_binary_sensor({
+        "name": f"{config[CONF_ID]} Sync Online"
+    })
+    await binary_sensor_comp.register_binary_sensor(sync_online)
     cg.add(var.set_sync_online_binary_sensor(sync_online))
 
-    # Auto-create "Sync Sending Backlog" binary sensor
-    sync_backlog = binary_sensor_comp.BinarySensor.new()
-    sync_backlog.set_name("Sync Sending Backlog")
+
+    # Auto-create Sync Sending Backlog binary sensor
+    sync_backlog = binary_sensor_comp.new_binary_sensor({
+        "name": f"{config[CONF_ID]} Sync Sending Backlog"
+    })
+    await binary_sensor_comp.register_binary_sensor(sync_backlog)
     cg.add(var.set_sync_sending_backlog_binary_sensor(sync_backlog))
