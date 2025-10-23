@@ -19,11 +19,16 @@ namespace sd_logger {
 
 static const char* const TAG = "sd_logger";
 
+static uint32_t window_start_(uint32_t epoch);
+static std::string filename_for_(uint32_t window_epoch);
+static bool ensure_dir_(const std::string& path);
+static bool atomic_write_(const std::string& path);
+
 // ===== Component =====
 void SdLogger::setup() {
   ESP_LOGI(TAG, "setup()");
   if (this->log_path_.empty()) this->log_path_ = "/sdcard/logs";
-  ensure_dir_(this->log_path_);
+  this->ensure_log_dir_();
 
   this->live_queue_ = xQueueCreate(16, sizeof(LiveItem));
   if (!this->live_queue_) ESP_LOGE(TAG, "create live queue failed");
@@ -182,7 +187,7 @@ bool SdLogger::time_valid_() const {
   return t.is_valid();
 }
 
-void SdLogger::ensure_log_dir_() { (void)this->ensure_dir_(this->log_path_); }
+void SdLogger::ensure_log_dir_() { (void)ensure_dir_(this->log_path_); }
 
 void SdLogger::publish_sync_online_(bool v) {
   this->sync_online_ = v;
@@ -251,7 +256,7 @@ bool SdLogger::write_window_file_(const std::string& json) {
   this->ensure_log_dir_();
 
   uint32_t epoch = (uint32_t)this->time_->now().timestamp;
-  uint32_t win = this->window_start_(epoch);
+  uint32_t win = window_start_(epoch);;
   std::string full = this->log_path_ + "/" + filename_for_(win);
 
   if (!atomic_write_(full, json)) {
@@ -328,7 +333,7 @@ bool SdLogger::send_http_ping_(int* http_status, std::string* resp_err) {
     esp_http_client_set_header(client, "Authorization",
                                this->bearer_token_.c_str());
   esp_http_client_set_header(client, "Connection", "close");
-  +esp_err_t err = esp_http_client_perform(client);
+  esp_err_t err = esp_http_client_perform(client);
   bool ok = false;
   if (err == ESP_OK) {
     int code = esp_http_client_get_status_code(client);
