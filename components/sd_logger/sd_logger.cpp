@@ -65,13 +65,12 @@ static bool ensure_dir_(const std::string& path) {
 static bool atomic_write_(const std::string& path, const std::string& data) {
   std::string tmp = path + ".tmp";
 
-
-  int fd = ::open("/sdcard/LOGS/test.txt", O_WRONLY | O_CREAT | O_TRUNC, 0664);
-ESP_LOGE("test", "open test.txt = %d (errno=%d)", fd, errno);
-if (fd >= 0) {
-  write(fd, "ok", 2);
-  close(fd);
-}
+  int fda = ::open("/sdcard/LOGS/test.txt", O_WRONLY | O_CREAT | O_TRUNC, 0664);
+  ESP_LOGE("test", "open test.txt = %d (errno=%d)", fda, errno);
+  if (fda >= 0) {
+    write(fda, "ok", 2);
+    close(fda);
+  }
 
   // 1. Attempt to open file
   int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0664);
