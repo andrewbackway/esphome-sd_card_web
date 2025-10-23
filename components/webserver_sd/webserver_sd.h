@@ -1,7 +1,7 @@
 #pragma once
 #include "esphome/core/component.h"
 #include "esphome/components/web_server_base/web_server_base.h"
-#include "../sd_mmc_card/sd_mmc_card.h"
+#include "../sd_mmc/sd_mmc_card.h"
 #include <string>
 #include <vector>
 
