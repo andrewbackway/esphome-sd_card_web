@@ -255,7 +255,15 @@ void SDLogger::schedule_next_attempt_(bool success) {
 
 void SDLogger::upload_task_trampoline_(void *param) {
   auto *self = static_cast<SDLogger *>(param);
+
+  // Register this task with the ESP-IDF Task Watchdog
+  esp_task_wdt_add(nullptr);
+
   self->run_upload_task_();
+
+  // Unregister before exiting
+  esp_task_wdt_delete(nullptr);
+
   self->task_in_progress_ = false;
   self->upload_task_ = nullptr;
   vTaskDelete(nullptr);
