@@ -182,7 +182,7 @@ bool SdLogger::time_valid_() const {
   return t.is_valid();
 }
 
-void SdLogger::ensure_log_dir_() { (void)ensure_dir_(this->log_path_); }
+void SdLogger::ensure_log_dir_() { (void)this->ensure_dir_(this->log_path_); }
 
 void SdLogger::publish_sync_online_(bool v) {
   this->sync_online_ = v;
@@ -251,7 +251,7 @@ bool SdLogger::write_window_file_(const std::string& json) {
   this->ensure_log_dir_();
 
   uint32_t epoch = (uint32_t)this->time_->now().timestamp;
-  uint32_t win = window_start_(epoch);
+  uint32_t win = this->window_start_(epoch);
   std::string full = this->log_path_ + "/" + filename_for_(win);
 
   if (!atomic_write_(full, json)) {
