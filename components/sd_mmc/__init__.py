@@ -19,7 +19,7 @@ from esphome.components.esp32.const import (
 
 DEPENDENCIES = ["esp32"]
 
-CONF_SD_MMC_CARD_ID = "sd_mmc_card_id"
+CONF_SD_MMC_CARD_ID = "sd_mmc_id"
 CONF_CMD_PIN = "cmd_pin"
 CONF_DATA0_PIN = "data0_pin"
 CONF_DATA1_PIN = "data1_pin"
@@ -28,15 +28,15 @@ CONF_DATA3_PIN = "data3_pin"
 CONF_MODE_1BIT = "mode_1bit"
 CONF_POWER_CTRL_PIN = "power_ctrl_pin"
 
-sd_mmc_card_component_ns = cg.esphome_ns.namespace("sd_mmc")
-SdMmc = sd_mmc_card_component_ns.class_("SdMmc", cg.Component)
+sd_mmc_component_ns = cg.esphome_ns.namespace("sd_mmc")
+SdMmc = sd_mmc_component_ns.class_("SdMmc", cg.Component)
 
 # Action
-SdMmcWriteFileAction = sd_mmc_card_component_ns.class_("SdMmcWriteFileAction", automation.Action)
-SdMmcAppendFileAction = sd_mmc_card_component_ns.class_("SdMmcAppendFileAction", automation.Action)
-SdMmcCreateDirectoryAction = sd_mmc_card_component_ns.class_("SdMmcCreateDirectoryAction", automation.Action)
-SdMmcRemoveDirectoryAction = sd_mmc_card_component_ns.class_("SdMmcRemoveDirectoryAction", automation.Action)
-SdMmcDeleteFileAction = sd_mmc_card_component_ns.class_("SdMmcDeleteFileAction", automation.Action)
+SdMmcWriteFileAction = sd_mmc_component_ns.class_("SdMmcWriteFileAction", automation.Action)
+SdMmcAppendFileAction = sd_mmc_component_ns.class_("SdMmcAppendFileAction", automation.Action)
+SdMmcCreateDirectoryAction = sd_mmc_component_ns.class_("SdMmcCreateDirectoryAction", automation.Action)
+SdMmcRemoveDirectoryAction = sd_mmc_component_ns.class_("SdMmcRemoveDirectoryAction", automation.Action)
+SdMmcDeleteFileAction = sd_mmc_component_ns.class_("SdMmcDeleteFileAction", automation.Action)
 
 def validate_raw_data(value):
     if isinstance(value, str):
@@ -115,7 +115,7 @@ SD_MMC_WRITE_FILE_ACTION_SCHEMA = cv.Schema(
 ).extend(SD_MMC_PATH_ACTION_SCHEMA)
 
 @automation.register_action(
-    "sd_mmc_card.write_file", SdMmcWriteFileAction, SD_MMC_WRITE_FILE_ACTION_SCHEMA
+    "sd_mmc.write_file", SdMmcWriteFileAction, SD_MMC_WRITE_FILE_ACTION_SCHEMA
 )
 async def sd_mmc_write_file_to_code(config, action_id, template_arg, args):
     parent = await cg.get_variable(config[CONF_ID])
@@ -128,7 +128,7 @@ async def sd_mmc_write_file_to_code(config, action_id, template_arg, args):
 
 
 @automation.register_action(
-    "sd_mmc_card.append_file", SdMmcAppendFileAction, SD_MMC_WRITE_FILE_ACTION_SCHEMA
+    "sd_mmc.append_file", SdMmcAppendFileAction, SD_MMC_WRITE_FILE_ACTION_SCHEMA
 )
 async def sd_mmc_append_file_to_code(config, action_id, template_arg, args):
     parent = await cg.get_variable(config[CONF_ID])
@@ -141,7 +141,7 @@ async def sd_mmc_append_file_to_code(config, action_id, template_arg, args):
 
 
 @automation.register_action(
-    "sd_mmc_card.create_directory", SdMmcCreateDirectoryAction, SD_MMC_PATH_ACTION_SCHEMA
+    "sd_mmc.create_directory", SdMmcCreateDirectoryAction, SD_MMC_PATH_ACTION_SCHEMA
 )
 async def sd_mmc_create_directory_to_code(config, action_id, template_arg, args):
     parent = await cg.get_variable(config[CONF_ID])
@@ -152,7 +152,7 @@ async def sd_mmc_create_directory_to_code(config, action_id, template_arg, args)
 
 
 @automation.register_action(
-    "sd_mmc_card.remove_directory", SdMmcRemoveDirectoryAction, SD_MMC_PATH_ACTION_SCHEMA
+    "sd_mmc.remove_directory", SdMmcRemoveDirectoryAction, SD_MMC_PATH_ACTION_SCHEMA
 )
 async def sd_mmc_remove_directory_to_code(config, action_id, template_arg, args):
     parent = await cg.get_variable(config[CONF_ID])
@@ -163,7 +163,7 @@ async def sd_mmc_remove_directory_to_code(config, action_id, template_arg, args)
 
 
 @automation.register_action(
-    "sd_mmc_card.delete_file", SdMmcDeleteFileAction, SD_MMC_PATH_ACTION_SCHEMA
+    "sd_mmc.delete_file", SdMmcDeleteFileAction, SD_MMC_PATH_ACTION_SCHEMA
 )
 async def sd_mmc_delete_file_to_code(config, action_id, template_arg, args):
     parent = await cg.get_variable(config[CONF_ID])
