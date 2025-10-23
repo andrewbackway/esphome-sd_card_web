@@ -15,7 +15,7 @@ CONF_ENABLE_DOWNLOAD = "enable_download"
 CONF_ENABLE_UPLOAD = "enable_upload"
 
 AUTO_LOAD = ["web_server_base"]
-DEPENDENCIES = ["sd_mmc_card"]
+DEPENDENCIES = ["sd_mmc"]
 
 sd_file_server_ns = cg.esphome_ns.namespace("webserver_sd")
 SDFileServer = sd_file_server_ns.class_("SDFileServer", cg.Component)

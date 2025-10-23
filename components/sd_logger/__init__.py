@@ -6,6 +6,8 @@ from esphome.components import sensor, time as time_
 sdlog_ns = cg.esphome_ns.namespace("sdlog")
 SDLogger = sdlog_ns.class_("SDLogger", cg.Component)
 
+DEPENDENCIES = ["sd_mmc"]
+
 CONF_UPLOAD_URL = "upload_url"
 CONF_BEARER_TOKEN = "bearer_token"
 CONF_LOG_PATH = "log_path"
