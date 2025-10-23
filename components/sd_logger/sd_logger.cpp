@@ -332,12 +332,13 @@ void SDLogger::run_upload_task_() {
 }
 
 void SDLogger::write_csv_line_(const std::string &sensor_object_id, float value) {
-  time_t now_ts = 0;
-  if (this->time_ && this->time_->now().is_valid()) {
-    now_ts = this->time_->now().timestamp;
-  } else {
-    now_ts = now_ms() / 1000;
+  // Only write if SNTP time is valid
+  if (!this->time_ || !this->time_->now().is_valid()) {
+    ESP_LOGW(TAG, "Skipping log, time not yet synchronized");
+    return;
   }
+
+  time_t now_ts = this->time_->now().timestamp;
 
   struct tm tm_now;
   localtime_r(&now_ts, &tm_now);
@@ -346,20 +347,22 @@ void SDLogger::write_csv_line_(const std::string &sensor_object_id, float value)
   strftime(fname, sizeof(fname), "%Y%m%d.csv", &tm_now);
   std::string path = this->log_path_ + "/" + fname;
 
-  // epoch_seconds,sensor_id,value\n
-  char line[160];
-  int n = snprintf(line, sizeof(line), "%ld,%s,%.6f\n",
-                   static_cast<long>(now_ts), sensor_object_id.c_str(), value);
+  // FORMAT: ISO8601,sensor,value
+  char line[200];
+  strftime(line, sizeof(line), "%Y-%m-%dT%H:%M:%S,", &tm_now);
+  std::string full_line = std::string(line) + sensor_object_id + "," + to_string(value) + "\n";
 
   FILE *fp = fopen(path.c_str(), "ab");
   if (!fp) {
-    ESP_LOGW(TAG, "Open failed: %s", path.c_str());
+    ESP_LOGW(TAG, "Failed to open %s", path.c_str());
     return;
   }
-  fwrite(line, 1, n, fp);
+
+  fwrite(full_line.c_str(), 1, full_line.size(), fp);
   fflush(fp);
   fclose(fp);
 }
+
 
 }  // namespace sdlog
 }  // namespace esphome
