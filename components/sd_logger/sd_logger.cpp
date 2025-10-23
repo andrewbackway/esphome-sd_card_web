@@ -60,7 +60,49 @@ static bool ensure_dir_(const std::string &path) {
   if (stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) return true;
   return mkdir(path.c_str(), 0775) == 0;
 }
+
+// List all files/folders in a given path
+void list_directory_(const char *path) {
+  ESP_LOGI(TAG, "Listing directory: %s", path);
+
+  DIR *dir = opendir(path);
+  if (!dir) {
+    ESP_LOGE(TAG, "❌ Failed to open directory %s (errno=%d)", path, errno);
+    return;
+  }
+
+  struct dirent *entry;
+  while ((entry = readdir(dir)) != nullptr) {
+    // Build full path
+    std::string full_path = std::string(path) + "/" + entry->d_name;
+
+    struct stat st;
+    if (stat(full_path.c_str(), &st) == 0) {
+      if (S_ISDIR(st.st_mode)) {
+        ESP_LOGI(TAG, "📁 DIR  : %s", full_path.c_str());
+      } else if (S_ISREG(st.st_mode)) {
+        ESP_LOGI(TAG, "📄 FILE : %s (%ld bytes)", full_path.c_str(), st.st_size);
+      } else {
+        ESP_LOGI(TAG, "❓ OTHER: %s", full_path.c_str());
+      }
+    } else {
+      ESP_LOGW(TAG, "⚠️ stat() failed: %s (errno=%d)", full_path.c_str(), errno);
+    }
+  }
+
+  closedir(dir);
+}
+
 static bool atomic_write_(const std::string &path, const std::string &data) {
+
+   ESP_LOGI("sd_logger", "Booting sd_logger...");
+
+  // Try listing root mount points
+  list_directory_("/");        // Root of VFS
+  list_directory_("/sd");      // If SD is mounted here
+  list_directory_("/sdcard");  // If mounted as /sdcard
+  list_directory_("/mnt");     // ESP-IDF sometimes uses this
+  
   std::string tmp = path + ".tmp";
 
   // 1. Attempt to open file
