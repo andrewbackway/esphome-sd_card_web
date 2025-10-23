@@ -28,12 +28,12 @@ void SDLogger::setup() {
 }
 
 void SDLogger::loop() {
-  const uint32_t now = millis();
+  const uint32_t now = esphome::millis();
   if (this->task_in_progress_) return;
 
   if ((now - this->last_attempt_ms_) < this->current_backoff_ms_) return;
 
-  if (!network_is_connected()) {
+  if (!App.is_connected()) {
     this->schedule_next_attempt_(false);
     return;
   }
@@ -205,7 +205,7 @@ bool SDLogger::upload_buffer_(const uint8_t *data, size_t len, bool is_gzip, int
 }
 
 void SDLogger::schedule_next_attempt_(bool success) {
-  this->last_attempt_ms_ = millis();
+  this->last_attempt_ms_ = esphome::millis();
   if (success) {
     this->current_backoff_ms_ = this->upload_interval_ms_;
   } else {
@@ -276,7 +276,7 @@ void SDLogger::write_csv_line_(const std::string &sensor_object_id, float value)
   if (this->time_ && this->time_->now().is_valid()) {
     now_ts = this->time_->now().timestamp;
   } else {
-    now_ts = millis() / 1000;
+    now_ts = esphome::millis() / 1000;
   }
 
   struct tm tm_now;
