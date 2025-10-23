@@ -271,6 +271,8 @@ bool SdLogger::send_http_put_(const std::string& body, int* http_status,
   if (http_status) *http_status = -1;
   if (resp_err) resp_err->clear();
 
+  ESP_LOGD(TAG, "send_http_put_()");
+
   esp_http_client_config_t cfg{};
   cfg.url = this->upload_url_.c_str();
   cfg.method = HTTP_METHOD_PUT;
@@ -305,6 +307,8 @@ bool SdLogger::send_http_put_(const std::string& body, int* http_status,
 }
 
 bool SdLogger::send_http_ping_(int* http_status, std::string* resp_err) {
+  ESP_LOGD(TAG, "send_http_ping_()");
+
   if (http_status) *http_status = -1;
   if (resp_err) resp_err->clear();
 
@@ -402,6 +406,7 @@ bool SdLogger::load_file_(const std::string& path, std::string& data_out) {
 }
 
 bool SdLogger::delete_file_(const std::string& path) {
+  ESP_LOGD(TAG, "delete_file_: %s", path.c_str());
   return ::unlink(path.c_str()) == 0;
 }
 
@@ -457,6 +462,8 @@ void SdLogger::task_backlog_entry_(void* param) {
       continue;
     }
     self->publish_sync_backlog_(true);
+
+    ESP_LOGI(TAG, "Backlog upload attempt");
 
     std::string path;
     if (!self->find_oldest_file_(path)) {
