@@ -65,13 +65,6 @@ static bool ensure_dir_(const std::string& path) {
 static bool atomic_write_(const std::string& path, const std::string& data) {
   std::string tmp = path + ".tmp";
 
-  int fda = ::open("/sdcard/LOGS/test.txt", O_WRONLY | O_CREAT | O_TRUNC, 0664);
-  ESP_LOGE("test", "open test.txt = %d (errno=%d)", fda, errno);
-  if (fda >= 0) {
-    write(fda, "ok", 2);
-    close(fda);
-  }
-
   // 1. Attempt to open file
   int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0664);
   if (fd < 0) {
@@ -221,8 +214,7 @@ bool SdLogger::build_payload_json_(std::string& out_json) {
     for (auto* s : this->sensors_) {
       JsonObject o = arr.add<JsonObject>();
       // Prefer object_id if name empty
-      std::string sid =
-          s->get_name().empty() ? s->get_object_id() : s->get_name();
+      std::string sid = s->get_object_id();
       if (sid.size() > 100)
         sid.resize(100);  // guard, though spec applies to values
       o["sensorId"] = sid.c_str();
