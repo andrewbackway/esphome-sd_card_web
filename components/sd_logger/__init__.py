@@ -50,13 +50,13 @@ async def to_code(config):
     for s in config[CONF_SENSORS]:
         sensor_var = await cg.get_variable(s)
         cg.add(var.add_sensor(sensor_var))
-        
+
     # Auto-create "Sync Online" binary sensor
-    sync_online = cg.new_Pvariable(cg.generate_id("sd_logger_sync_online"))
-    sync_online.set_name(f"{config[CONF_ID]} Sync Online")
+    sync_online = binary_sensor_comp.BinarySensor.new()
+    sync_online.set_name("Sync Online")
     cg.add(var.set_sync_online_binary_sensor(sync_online))
 
     # Auto-create "Sync Sending Backlog" binary sensor
-    sync_backlog = cg.new_Pvariable(cg.generate_id("sd_logger_sync_backlog"))
-    sync_backlog.set_name(f"{config[CONF_ID]} Sending Backlog")
+    sync_backlog = binary_sensor_comp.BinarySensor.new()
+    sync_backlog.set_name("Sync Sending Backlog")
     cg.add(var.set_sync_sending_backlog_binary_sensor(sync_backlog))
