@@ -165,7 +165,7 @@ bool SdLogger::build_payload_json_(std::string &out_json) {
     root["deviceId"] = device_id;
     root["date"] = iso;
 
-    JsonArray arr = root["Sensors"].to<JsonArray>();
+    JsonArray arr = root["sensors"].to<JsonArray>();
     for (auto *s : this->sensors_) {
       JsonObject o = arr.add<JsonObject>();
       // Prefer object_id if name empty
@@ -200,10 +200,18 @@ bool SdLogger::build_payload_json_(std::string &out_json) {
 }
 
 bool SdLogger::write_window_file_(const std::string &json) {
+  // Make sure directory exists (but DON'T recreate code — call the existing helper).
+  this->ensure_log_dir_();
+
   uint32_t epoch = (uint32_t) this->time_->now().timestamp;
   uint32_t win = window_start_(epoch);
   std::string full = this->log_path_ + "/" + filename_for_(win);
-  return atomic_write_(full, json);
+
+  if (!atomic_write_(full, json)) {
+    ESP_LOGE(TAG, "Failed to write %s (errno=%d)", full.c_str(), errno);
+    return false;
+  }
+  return true;
 }
 
 bool SdLogger::send_http_put_(const std::string &body, int *http_status, std::string *resp_err) {
