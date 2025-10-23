@@ -1,4 +1,4 @@
-#include "sd_mmc_card.h"
+#include "sd_mmc.h"
 
 #include "math.h"
 #include "esphome/core/log.h"
