@@ -18,6 +18,9 @@ CONF_BACKOFF_INITIAL = "backoff_initial"
 CONF_BACKOFF_MAX = "backoff_max"
 CONF_SENSORS = "sensors"
 
+CONF_SYNC_ONLINE = "sync_online"
+CONF_SYNC_SENDING_BACKLOG = "sync_sending_backlog"
+
 CONFIG_SCHEMA = cv.Schema(
     {
         cv.GenerateID(): cv.declare_id(SdLogger),
@@ -30,6 +33,14 @@ CONFIG_SCHEMA = cv.Schema(
         cv.Required(CONF_BACKOFF_MAX): cv.positive_time_period_milliseconds,
 
         cv.Required(CONF_SENSORS): cv.ensure_list(cv.use_id(sensor_comp.Sensor)),
+
+        # ✅ Let ESPHome generate proper IDs & register entities
+        cv.Optional(CONF_SYNC_ONLINE): binary_sensor_comp.BINARY_SENSOR_SCHEMA.extend(
+            { cv.Optional("name", default="Sync Online"): cv.string }
+        ),
+        cv.Optional(CONF_SYNC_SENDING_BACKLOG): binary_sensor_comp.BINARY_SENSOR_SCHEMA.extend(
+            { cv.Optional("name", default="Sync Sending Backlog"): cv.string }
+        ),
     }
 )
 
@@ -56,19 +67,11 @@ async def to_code(config):
         sensor_vec.append(sv)
     cg.add(var.set_sensors(sensor_vec))
 
-    # Auto-create Sync Online binary sensor with generated ID
-    sync_online_id = cg.new_id()
-    sync_online = await binary_sensor_comp.new_binary_sensor({
-        "id": sync_online_id,
-        "name": f"{config[CONF_ID]} Sync Online"
-    })
-    cg.add(var.set_sync_online_binary_sensor(sync_online))
+    # Create/attach binary sensors via schema (IDs generated correctly)
+    if CONF_SYNC_ONLINE in config:
+        bs = await binary_sensor_comp.new_binary_sensor(config[CONF_SYNC_ONLINE])
+        cg.add(var.set_sync_online_binary_sensor(bs))
 
-    # Auto-create Sync Sending Backlog sensor
-    sync_backlog_id = cg.new_id()
-    sync_backlog = await binary_sensor_comp.new_binary_sensor({
-        "id": sync_backlog_id,
-        "name": f"{config[CONF_ID]} Sync Sending Backlog"
-    })
-    cg.add(var.set_sync_sending_backlog_binary_sensor(sync_backlog))
-
+    if CONF_SYNC_SENDING_BACKLOG in config:
+        bs2 = await binary_sensor_comp.new_binary_sensor(config[CONF_SYNC_SENDING_BACKLOG])
+        cg.add(var.set_sync_sending_backlog_binary_sensor(bs2))
