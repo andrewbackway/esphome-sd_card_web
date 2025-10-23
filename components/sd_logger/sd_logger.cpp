@@ -1,5 +1,6 @@
 #include "sd_logger.h"
 #include <ctime>
+#include "esphome/components/wifi/wifi_component.h"
 
 namespace esphome {
 namespace sdlog {
@@ -33,7 +34,7 @@ void SDLogger::loop() {
 
   if ((now - this->last_attempt_ms_) < this->current_backoff_ms_) return;
 
-  if (!App.is_connected()) {
+  if (!wifi::global_wifi_component->is_connected())) {
     this->schedule_next_attempt_(false);
     return;
   }
