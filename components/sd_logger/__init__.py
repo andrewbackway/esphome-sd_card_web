@@ -33,34 +33,37 @@ CONFIG_SCHEMA = cv.Schema(
     }
 )
 
+
 async def to_code(config):
     var = cg.new_Pvariable(config[CONF_ID])
     await cg.register_component(var, config)
 
+    # Time reference
     time_var = await cg.get_variable(config["time_id"])
     cg.add(var.set_time(time_var))
 
+    # Config values
     cg.add(var.set_upload_url(config[CONF_UPLOAD_URL]))
     cg.add(var.set_bearer_token(config[CONF_BEARER_TOKEN]))
     cg.add(var.set_log_path(config[CONF_LOG_PATH]))
     cg.add(var.set_backoff_initial_ms(config[CONF_BACKOFF_INITIAL]))
     cg.add(var.set_backoff_max_ms(config[CONF_BACKOFF_MAX]))
 
-    # sensors vector
+    # Attach sensors
     sensor_vec = []
     for s in config[CONF_SENSORS]:
         sv = await cg.get_variable(s)
         sensor_vec.append(sv)
     cg.add(var.set_sensors(sensor_vec))
-    
-    # Create "Sync Online" binary sensor
-    sync_online = binary_sensor_comp.new_binary_sensor({
+
+    # ✅ Create and register "Sync Online" binary sensor
+    sync_online = await binary_sensor_comp.new_binary_sensor({
         "name": f"{config[CONF_ID]} Sync Online"
     })
     cg.add(var.set_sync_online_binary_sensor(sync_online))
 
-    # Create "Sync Sending Backlog" binary sensor
-    sync_backlog = binary_sensor_comp.new_binary_sensor({
+    # ✅ Create and register "Sync Sending Backlog" binary sensor
+    sync_backlog = await binary_sensor_comp.new_binary_sensor({
         "name": f"{config[CONF_ID]} Sync Sending Backlog"
     })
     cg.add(var.set_sync_sending_backlog_binary_sensor(sync_backlog))
