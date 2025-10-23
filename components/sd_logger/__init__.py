@@ -2,7 +2,7 @@ import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.components import time as time_comp
 from esphome.components import sensor as sensor_comp
-from esphome.components import binary_sensor 
+from esphome.components import binary_sensor as binary_sensor_comp
 from esphome.const import (
     CONF_ID
 )
@@ -42,10 +42,10 @@ CONFIG_SCHEMA = cv.Schema(
 
         cv.Required(CONF_SENSORS): cv.ensure_list(cv.use_id(sensor_comp.Sensor)),
 
-        cv.Optional(CONF_SYNC_ONLINE): binary_sensor.binary_sensor_schema(
+        cv.Optional(CONF_SYNC_ONLINE): binary_sensor_comp.binary_sensor_schema(
             default_name="Sync Online"
         ),
-        cv.Optional(CONF_SYNC_SENDING_BACKLOG): binary_sensor.binary_sensor_schema(
+        cv.Optional(CONF_SYNC_SENDING_BACKLOG): binary_sensor_comp.binary_sensor_schema(
             default_name="Sync Sending Backlog"
         ),
     }
