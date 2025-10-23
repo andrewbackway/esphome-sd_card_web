@@ -15,7 +15,7 @@
 #endif
 
 namespace esphome {
-namespace sd_mmc_card {
+namespace sd_mmc {
 
 enum MemoryUnits : short { Byte = 0, KiloByte = 1, MegaByte = 2, GigaByte = 3, TeraByte = 4, PetaByte = 5 };
 

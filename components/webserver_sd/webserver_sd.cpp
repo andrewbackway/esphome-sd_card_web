@@ -5,7 +5,7 @@
 #include "esphome/core/helpers.h"
 
 namespace esphome {
-namespace sd_file_server {
+namespace webserver_sd {
 
 static const char *TAG = "sd_file_server";
 

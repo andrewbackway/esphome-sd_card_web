@@ -6,7 +6,7 @@
 #include "esphome/core/log.h"
 
 namespace esphome {
-namespace sd_mmc_card {
+namespace sd_mmc {
 
 static const char *TAG = "sd_mmc_card";
 
