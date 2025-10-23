@@ -1,135 +1,127 @@
 #pragma once
 
 #include "esphome/core/component.h"
-#include "esphome/core/log.h"
+#include "esphome/components/sensor/sensor.h"
+#include "esphome/components/time/real_time_clock.h"
 #include "esphome/components/wifi/wifi_component.h"
 
-#include <string>
 #include <vector>
-#include <map>
-#include <atomic>
+#include <string>
+#include <queue>
+#include <mutex>
+#include <cstdio>
+#include <cstdint>
 
+extern "C" {
+#include "esp_http_client.h"
+#include "esp_timer.h"
+#include "esp_system.h"
+#include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "freertos/queue.h"
+}
 
 namespace esphome {
 namespace sdlog {
 
-static const char *const TAG = "sd_logger";
+// compile-time toggles
+#ifndef SDLOG_MAX_LIVE_QUEUE
+#define SDLOG_MAX_LIVE_QUEUE 128
+#endif
 
-// One sample row destined for either live upload or file CSV.
-struct Sample {
-  std::string sensor;
-  float value;
-  int64_t epoch_ms;  // wall clock in ms
-};
+#ifndef SDLOG_ROTATE_SECONDS
+#define SDLOG_ROTATE_SECONDS 30
+#endif
 
-// Simple ring-scoped backoff tracker
-struct Backoff {
-  uint32_t initial_ms{30000};
-  uint32_t max_ms{900000};
-  uint32_t current_ms{0};
-  void reset() { current_ms = 0; }
-  uint32_t next() {
-    if (current_ms == 0) current_ms = initial_ms;
-    else current_ms = std::min<uint32_t>(max_ms, current_ms * 2);
-    return current_ms;
-  }
+struct LiveLine {
+  std::string csv;     // formatted single CSV line with '\n'
+  uint64_t ts_ms;      // when created
 };
 
 class SDLogger : public Component {
  public:
-  // --- Configurable (via YAML) ---
-  void set_upload_url(const std::string &url) { upload_url_ = url; }
-  void set_bearer_token(const std::string &token) { bearer_token_ = token; }
-  void set_log_path(const std::string &path) { log_path_ = path; }
-  void set_gzip(bool enabled) { gzip_enabled_ = enabled; }
-  void set_upload_interval_ms(uint32_t ms) { upload_interval_ms_ = ms; }  // for periodic kicks (kept)
+  void set_time(time::RealTimeClock *t) { this->time_ = t; }
+  void set_upload_url(const std::string &u) { this->upload_url_ = u; }
+  void set_bearer_token(const std::string &t) { this->bearer_token_ = t; }
+  void set_log_path(const std::string &p) { this->log_path_ = p; }
+  void set_upload_interval_ms(uint32_t ms) { this->upload_interval_ms_ = ms; }
   void set_backoff(uint32_t initial_ms, uint32_t max_ms) {
-    backoff_.initial_ms = initial_ms; backoff_.max_ms = max_ms;
+    this->backoff_initial_ms_ = initial_ms;
+    this->backoff_max_ms_ = max_ms;
   }
-  void set_live_throttle_ms(uint32_t ms) { live_throttle_ms_ = ms; } // default 30000
+  void set_gzip(bool g) { this->gzip_ = g; }
 
-  // Call when a tracked sensor publishes a value.
-  // (You already wire this up in your existing integration—no lambdas here.)
-  void on_sensor_update(const std::string &name, float value);
+  void add_tracked_sensor(sensor::Sensor *s) { this->sensors_.push_back(s); }
 
-  // Core
+  // called by YAML-free hooks from __init__.py wiring; we internally subscribe
+  void on_sensor_state(sensor::Sensor *s, float state);
+
+  // esphome lifecycle
   void setup() override;
   void loop() override;
   void dump_config() override;
 
  protected:
-  // --- connectivity ---
-  bool is_online_() const;
-  bool network_ready_() const;
+  // internal
+  static void upload_task_trampoline_(void *self);
+  void upload_task_();
 
-  // --- time helpers ---
-  static int64_t now_ms_();              // wallclock in ms (requires SNTP)
-  static bool time_synced_();            // true once system time is set
+  bool is_online_() const {
+    return wifi::global_wifi_component != nullptr &&
+           wifi::global_wifi_component->is_connected();
+  }
 
-  // --- file rotation & csv ---
-  bool ensure_log_dir_();
-  void maybe_rotate_file_(int64_t now_ms);
-  bool open_file_for_window_(int64_t window_start_ms);
-  void close_current_file_();
-  std::string make_filename_(int64_t window_start_ms) const;  // /sdcard/logs/YYYY-MM-DD_HH-MM-SS.csv
-  bool append_csv_line_(const Sample &s);
+  // file helpers
+  bool ensure_dir_();
+  std::string current_file_path_();
+  void rotate_file_if_needed_(uint64_t now_ms);
+  bool append_line_to_file_(const std::string &line);
+  bool upload_file_(const std::string &path);
+  void scan_and_queue_oldest_file_(std::string &out_path); // returns empty if none
 
-  // --- upload paths ---
-  void start_live_task_if_needed_();
-  void start_backlog_task_if_needed_();
+  // http helpers
+  bool http_post_lines_(const std::string &payload, bool gzipped);
+  bool http_post_file_(FILE *fp, size_t size, bool gzipped);
 
-  static void live_task_trampoline_(void *param);
-  static void backlog_task_trampoline_(void *param);
+  // gzip helpers (miniz single-file, compiled in sd_logger/miniz.c)
+  bool gzip_buffer_(const uint8_t *in, size_t in_len, std::string &out);
 
-  void run_live_task_();     // consumes live_queue_ and performs HTTPS posts
-  void run_backlog_task_();  // scans directory and uploads oldest files
+  // time helpers
+  bool time_synced_() const;
+  uint64_t now_ms_() const { return (uint64_t) (esp_timer_get_time() / 1000ULL); }
+  time::RealTimeClock *time_{nullptr};
 
-  bool upload_sample_http_(const Sample &s); // live POST, no gzip
-  bool upload_file_http_(const std::string &path); // file POST, gzip optional
-
-  // gzip utility (when enabled)
-  bool gzip_file_to_temp_(const std::string &src, std::string &out_tmp_path, size_t &out_size);
-
-  // fallback to file when live upload fails
-  void fallback_to_file_(const Sample &s, int64_t now_ms);
-
-  // scan log dir for *.csv or *.csv.gz oldest-first
-  bool find_oldest_log_file_(std::string &out_path);
-
- protected:
   // config
   std::string upload_url_;
   std::string bearer_token_;
-  std::string log_path_{"/sdcard/logs"};
-  bool gzip_enabled_{true};
-  uint32_t upload_interval_ms_{300000}; // still used to nudge backlog
-  uint32_t live_throttle_ms_{30000};
-  Backoff backoff_;
+  std::string log_path_ = "/sdcard/logs";
+  uint32_t upload_interval_ms_{300000}; // 5min default
+  uint32_t backoff_initial_ms_{30000};
+  uint32_t backoff_max_ms_{900000};
+  bool gzip_{true};
 
-  // live throttle cache
-  std::map<std::string, int64_t> last_live_sent_ms_;
+  // sensors + throttle
+  std::vector<sensor::Sensor*> sensors_;
+  // last send timestamp per-sensor (ms)
+  std::unordered_map<sensor::Sensor*, uint64_t> last_send_ms_;
+  static constexpr uint32_t SENSOR_MIN_PERIOD_MS = 30000; // once per sensor every 30s
 
-  // queues & tasks
-  QueueHandle_t live_queue_{nullptr};           // samples for live upload
-  TaskHandle_t live_task_{nullptr};
-  TaskHandle_t backlog_task_{nullptr};
-  std::atomic<bool> task_live_running_{false};
-  std::atomic<bool> task_backlog_running_{false};
+  // live queue (non-blocking)
+  std::deque<LiveLine> live_q_;
+  std::mutex live_q_mtx_;
 
-  // file state
-  FILE *cur_file_{nullptr};
-  std::string cur_file_path_;
-  int64_t cur_window_start_ms_{0}; // aligned to 30s boundary
+  // rotation state
+  uint64_t current_window_start_s_{0};
+  std::string current_file_path_cache_;
 
-  // timing
-  int64_t last_upload_kick_ms_{0};
+  // upload task
+  TaskHandle_t upload_task_handle_{nullptr};
+  uint64_t last_background_upload_ms_{0};
+  uint32_t backoff_ms_{0};
+  bool background_busy_{false};
 
-  // misc
-  bool log_dir_ok_{false};
-  bool warned_no_time_{false};
+  // debug tag
+  static constexpr const char *TAG = "sd_logger";
 };
 
 }  // namespace sdlog
