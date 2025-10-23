@@ -1,21 +1,23 @@
 #include "sd_logger.h"
+
+#include <dirent.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+#include <cmath>
+
 #include "esphome/core/helpers.h"
 #include "esphome/core/log.h"
 
-#include <sys/stat.h>
-#include <dirent.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <cmath>
-
 extern "C" {
-  #include "esp_timer.h"
+#include "esp_timer.h"
 }
 
 namespace esphome {
 namespace sd_logger {
 
-static const char *const TAG = "sd_logger";
+static const char* const TAG = "sd_logger";
 
 // ===== Utilities =====
 static std::string mac_as_device_id_() {
@@ -23,11 +25,10 @@ static std::string mac_as_device_id_() {
   // Use ESPHome helper instead of esp_read_mac()
   get_mac_address_raw(mac);  // pulls WiFi STA MAC or fallback
   char buf[18];
-  sprintf(buf, "%02x:%02x:%02x:%02x:%02x:%02x",
-          mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+  sprintf(buf, "%02x:%02x:%02x:%02x:%02x:%02x", mac[0], mac[1], mac[2], mac[3],
+          mac[4], mac[5]);
   return std::string(buf);
 }
-
 
 // basic UUIDv4 from random_uint32()
 static std::string uuid_v4_() {
@@ -39,8 +40,8 @@ static std::string uuid_v4_() {
   uint16_t mid = (uint16_t)((b >> 16) & 0x0fff) | 0x4000;
   uint16_t var = (uint16_t)((c >> 16) & 0x3fff) | 0x8000;
   char out[37];
-  snprintf(out, sizeof(out), "%08x-%04x-%04x-%04x-%04x%08x",
-           a, (uint16_t)(a >> 16), mid, var, (uint16_t)c, d);
+  snprintf(out, sizeof(out), "%08x-%04x-%04x-%04x-%04x%08x", a,
+           (uint16_t)(a >> 16), mid, var, (uint16_t)c, d);
   return std::string(out);
 }
 
@@ -55,71 +56,30 @@ static std::string filename_for_(uint32_t window_epoch) {
   return std::string(name);
 }
 
-static bool ensure_dir_(const std::string &path) {
+static bool ensure_dir_(const std::string& path) {
   struct stat st{};
   if (stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) return true;
   return mkdir(path.c_str(), 0775) == 0;
 }
 
-// List all files/folders in a given path
-void list_directory_(const char *path) {
-  ESP_LOGI(TAG, "Listing directory: %s", path);
-
-  DIR *dir = opendir(path);
-  if (!dir) {
-    ESP_LOGE(TAG, "❌ Failed to open directory %s (errno=%d)", path, errno);
-    return;
-  }
-
-  struct dirent *entry;
-  while ((entry = readdir(dir)) != nullptr) {
-    // Build full path
-    std::string full_path = std::string(path) + "/" + entry->d_name;
-
-    struct stat st;
-    if (stat(full_path.c_str(), &st) == 0) {
-      if (S_ISDIR(st.st_mode)) {
-        ESP_LOGI(TAG, "📁 DIR  : %s", full_path.c_str());
-      } else if (S_ISREG(st.st_mode)) {
-        ESP_LOGI(TAG, "📄 FILE : %s (%ld bytes)", full_path.c_str(), st.st_size);
-      } else {
-        ESP_LOGI(TAG, "❓ OTHER: %s", full_path.c_str());
-      }
-    } else {
-      ESP_LOGW(TAG, "⚠️ stat() failed: %s (errno=%d)", full_path.c_str(), errno);
-    }
-  }
-
-  closedir(dir);
-}
-
-static bool atomic_write_(const std::string &path, const std::string &data) {
-
-   ESP_LOGI("sd_logger", "Booting sd_logger...");
-
-  // Try listing root mount points
-  list_directory_("/");        // Root of VFS
-  list_directory_("/sd");      // If SD is mounted here
-  list_directory_("/sdcard");  // If mounted as /sdcard
-  list_directory_("/mnt");     // ESP-IDF sometimes uses this
-  
+static bool atomic_write_(const std::string& path, const std::string& data) {
   std::string tmp = path + ".tmp";
 
   // 1. Attempt to open file
   int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0664);
   if (fd < 0) {
-    ESP_LOGE(TAG, "atomic_write: open(%s) failed (errno=%d: %s)", 
-             tmp.c_str(), errno, strerror(errno));
+    ESP_LOGE(TAG, "atomic_write: open(%s) failed (errno=%d: %s)", tmp.c_str(),
+             errno, strerror(errno));
     return false;
   }
 
   // 2. Write full contents
   ssize_t left = (ssize_t)data.size();
-  const char *p = data.c_str();
+  const char* p = data.c_str();
   while (left > 0) {
     ssize_t w = ::write(fd, p, left);
     if (w <= 0) {
-      ESP_LOGE(TAG, "atomic_write: write(%s) failed (errno=%d: %s)", 
+      ESP_LOGE(TAG, "atomic_write: write(%s) failed (errno=%d: %s)",
                tmp.c_str(), errno, strerror(errno));
       ::close(fd);
       ::unlink(tmp.c_str());
@@ -131,8 +91,8 @@ static bool atomic_write_(const std::string &path, const std::string &data) {
 
   // 3. Sync to disk
   if (fsync(fd) != 0) {
-    ESP_LOGE(TAG, "atomic_write: fsync(%s) failed (errno=%d: %s)", 
-             tmp.c_str(), errno, strerror(errno));
+    ESP_LOGE(TAG, "atomic_write: fsync(%s) failed (errno=%d: %s)", tmp.c_str(),
+             errno, strerror(errno));
     ::close(fd);
     ::unlink(tmp.c_str());
     return false;
@@ -140,15 +100,15 @@ static bool atomic_write_(const std::string &path, const std::string &data) {
 
   // 4. Close file
   if (::close(fd) != 0) {
-    ESP_LOGE(TAG, "atomic_write: close(%s) failed (errno=%d: %s)", 
-             tmp.c_str(), errno, strerror(errno));
+    ESP_LOGE(TAG, "atomic_write: close(%s) failed (errno=%d: %s)", tmp.c_str(),
+             errno, strerror(errno));
     ::unlink(tmp.c_str());
     return false;
   }
 
   // 5. Rename tmp → final
   if (::rename(tmp.c_str(), path.c_str()) != 0) {
-    ESP_LOGE(TAG, "atomic_write: rename(%s -> %s) failed (errno=%d: %s)", 
+    ESP_LOGE(TAG, "atomic_write: rename(%s -> %s) failed (errno=%d: %s)",
              tmp.c_str(), path.c_str(), errno, strerror(errno));
     ::unlink(tmp.c_str());
     return false;
@@ -156,7 +116,6 @@ static bool atomic_write_(const std::string &path, const std::string &data) {
 
   return true;
 }
-
 
 // ===== Component =====
 void SdLogger::setup() {
@@ -167,22 +126,27 @@ void SdLogger::setup() {
   this->live_queue_ = xQueueCreate(16, sizeof(LiveItem));
   if (!this->live_queue_) ESP_LOGE(TAG, "create live queue failed");
 
-  xTaskCreatePinnedToCore(&SdLogger::task_live_entry_, "sdlog_live", 6 * 1024, this, 4, &this->task_live_, APP_CPU_NUM);
-  xTaskCreatePinnedToCore(&SdLogger::task_backlog_entry_, "sdlog_backlog", 7 * 1024, this, 3, &this->task_backlog_, APP_CPU_NUM);
+  xTaskCreatePinnedToCore(&SdLogger::task_live_entry_, "sdlog_live", 6 * 1024,
+                          this, 4, &this->task_live_, APP_CPU_NUM);
+  xTaskCreatePinnedToCore(&SdLogger::task_backlog_entry_, "sdlog_backlog",
+                          7 * 1024, this, 3, &this->task_backlog_, APP_CPU_NUM);
 
   publish_sync_online_(false);
   publish_sync_backlog_(false);
 }
 
 void SdLogger::loop() {
-  if (!time_valid_()) { this->have_started_ = false; return; }
+  if (!time_valid_()) {
+    this->have_started_ = false;
+    return;
+  }
 
-  uint32_t now = (uint32_t) this->time_->now().timestamp;
+  uint32_t now = (uint32_t)this->time_->now().timestamp;
   if (!this->have_started_) {
     this->start_valid_epoch_ = now;
     this->have_started_ = true;
     this->last_tick_window_ = 0;
-    ESP_LOGI(TAG, "SNTP valid at %u, starting in 30s", (unsigned) now);
+    ESP_LOGI(TAG, "SNTP valid at %u, starting in 30s", (unsigned)now);
     return;
   }
   if (now < (this->start_valid_epoch_ + 30)) return;
@@ -201,7 +165,8 @@ void SdLogger::loop() {
     LiveItem it{payload};
     if (xQueueSend(this->live_queue_, &it, 0) != pdPASS) {
       ESP_LOGW(TAG, "live queue full; spilling to SD");
-      if (!write_window_file_(payload)) ESP_LOGE(TAG, "spill-to-SD failed; dropping");
+      if (!write_window_file_(payload))
+        ESP_LOGE(TAG, "spill-to-SD failed; dropping");
     }
   } else {
     if (!write_window_file_(payload)) {
@@ -217,17 +182,18 @@ bool SdLogger::time_valid_() const {
   return t.is_valid();
 }
 
-void SdLogger::ensure_log_dir_() { (void) ensure_dir_(this->log_path_); }
+void SdLogger::ensure_log_dir_() { (void)ensure_dir_(this->log_path_); }
 
 void SdLogger::publish_sync_online_(bool v) {
   this->sync_online_ = v;
   if (this->sync_online_bs_) this->sync_online_bs_->publish_state(v);
 }
 void SdLogger::publish_sync_backlog_(bool v) {
-  if (this->sync_sending_backlog_bs_) this->sync_sending_backlog_bs_->publish_state(v);
+  if (this->sync_sending_backlog_bs_)
+    this->sync_sending_backlog_bs_->publish_state(v);
 }
 
-bool SdLogger::build_payload_json_(std::string &out_json) {
+bool SdLogger::build_payload_json_(std::string& out_json) {
   // Timestamp
   ESPTime t = this->time_->now();
   char iso[32];
@@ -245,11 +211,13 @@ bool SdLogger::build_payload_json_(std::string &out_json) {
     root["date"] = iso;
 
     JsonArray arr = root["sensors"].to<JsonArray>();
-    for (auto *s : this->sensors_) {
+    for (auto* s : this->sensors_) {
       JsonObject o = arr.add<JsonObject>();
       // Prefer object_id if name empty
-      std::string sid = s->get_name().empty() ? s->get_object_id() : s->get_name();
-      if (sid.size() > 100) sid.resize(100);  // guard, though spec applies to values
+      std::string sid =
+          s->get_name().empty() ? s->get_object_id() : s->get_name();
+      if (sid.size() > 100)
+        sid.resize(100);  // guard, though spec applies to values
       o["sensorId"] = sid.c_str();
 
       if (!s->has_state() || std::isnan(s->state) || std::isinf(s->state)) {
@@ -278,11 +246,12 @@ bool SdLogger::build_payload_json_(std::string &out_json) {
   return true;
 }
 
-bool SdLogger::write_window_file_(const std::string &json) {
-  // Make sure directory exists (but DON'T recreate code — call the existing helper).
+bool SdLogger::write_window_file_(const std::string& json) {
+  // Make sure directory exists (but DON'T recreate code — call the existing
+  // helper).
   this->ensure_log_dir_();
 
-  uint32_t epoch = (uint32_t) this->time_->now().timestamp;
+  uint32_t epoch = (uint32_t)this->time_->now().timestamp;
   uint32_t win = window_start_(epoch);
   std::string full = this->log_path_ + "/" + filename_for_(win);
 
@@ -293,7 +262,8 @@ bool SdLogger::write_window_file_(const std::string &json) {
   return true;
 }
 
-bool SdLogger::send_http_put_(const std::string &body, int *http_status, std::string *resp_err) {
+bool SdLogger::send_http_put_(const std::string& body, int* http_status,
+                              std::string* resp_err) {
   if (http_status) *http_status = -1;
   if (resp_err) resp_err->clear();
 
@@ -301,17 +271,21 @@ bool SdLogger::send_http_put_(const std::string &body, int *http_status, std::st
   cfg.url = this->upload_url_.c_str();
   cfg.method = HTTP_METHOD_PUT;
   cfg.timeout_ms = 15000;
-  cfg.transport_type = HTTP_TRANSPORT_OVER_SSL;   // works for http/https
-  cfg.skip_cert_common_name_check = true;         // disable verification per spec
+  cfg.transport_type = HTTP_TRANSPORT_OVER_SSL;  // works for http/https
+  cfg.skip_cert_common_name_check = true;  // disable verification per spec
 
   esp_http_client_handle_t client = esp_http_client_init(&cfg);
-  if (!client) { if (resp_err) *resp_err = "http_client_init failed"; return false; }
+  if (!client) {
+    if (resp_err) *resp_err = "http_client_init failed";
+    return false;
+  }
 
   esp_http_client_set_header(client, "Content-Type", "application/json");
   if (!this->bearer_token_.empty())
-    esp_http_client_set_header(client, "Authorization", this->bearer_token_.c_str());
+    esp_http_client_set_header(client, "Authorization",
+                               this->bearer_token_.c_str());
 
-  esp_http_client_set_post_field(client, body.c_str(), (int) body.size());
+  esp_http_client_set_post_field(client, body.c_str(), (int)body.size());
 
   esp_err_t err = esp_http_client_perform(client);
   if (err != ESP_OK) {
@@ -327,22 +301,25 @@ bool SdLogger::send_http_put_(const std::string &body, int *http_status, std::st
 }
 
 bool SdLogger::has_backlog_files_() {
-  DIR *dir = opendir(this->log_path_.c_str());
+  DIR* dir = opendir(this->log_path_.c_str());
   if (!dir) return false;
-  struct dirent *e;
+  struct dirent* e;
   bool any = false;
   while ((e = readdir(dir)) != nullptr) {
     std::string name = e->d_name;
-    if (name.size() >= 5 && name.rfind(".json") == name.size() - 5) { any = true; break; }
+    if (name.size() >= 5 && name.rfind(".json") == name.size() - 5) {
+      any = true;
+      break;
+    }
   }
   closedir(dir);
   return any;
 }
 
-bool SdLogger::find_oldest_file_(std::string &path_out) {
-  DIR *dir = opendir(this->log_path_.c_str());
+bool SdLogger::find_oldest_file_(std::string& path_out) {
+  DIR* dir = opendir(this->log_path_.c_str());
   if (!dir) return false;
-  struct dirent *e;
+  struct dirent* e;
   std::string oldest;
   time_t oldest_mtime = LONG_MAX;
 
@@ -364,7 +341,7 @@ bool SdLogger::find_oldest_file_(std::string &path_out) {
   return true;
 }
 
-bool SdLogger::load_file_(const std::string &path, std::string &data_out) {
+bool SdLogger::load_file_(const std::string& path, std::string& data_out) {
   int fd = ::open(path.c_str(), O_RDONLY);
   if (fd < 0) return false;
   std::string buf;
@@ -372,27 +349,32 @@ bool SdLogger::load_file_(const std::string &path, std::string &data_out) {
   ssize_t n = ::read(fd, buf.data(), buf.size());
   ::close(fd);
   if (n < 0) return false;
-  buf.resize((size_t) n);
+  buf.resize((size_t)n);
   data_out.swap(buf);
   return true;
 }
 
-bool SdLogger::delete_file_(const std::string &path) { return ::unlink(path.c_str()) == 0; }
+bool SdLogger::delete_file_(const std::string& path) {
+  return ::unlink(path.c_str()) == 0;
+}
 
 // ===== Tasks =====
-void SdLogger::task_live_entry_(void *param) {
-  auto *self = static_cast<SdLogger *>(param);
+void SdLogger::task_live_entry_(void* param) {
+  auto* self = static_cast<SdLogger*>(param);
   LiveItem item;
   for (;;) {
-    if (xQueueReceive(self->live_queue_, &item, pdMS_TO_TICKS(1000)) == pdPASS) {
+    if (xQueueReceive(self->live_queue_, &item, pdMS_TO_TICKS(1000)) ==
+        pdPASS) {
       int status = -1;
       std::string err;
       bool ok = self->send_http_put_(item.json, &status, &err);
-      if (ok) self->publish_sync_online_(true);
+      if (ok)
+        self->publish_sync_online_(true);
       else {
         ESP_LOGW(TAG, "Live PUT failed (status=%d): %s", status, err.c_str());
         self->publish_sync_online_(false);
-        if (!self->write_window_file_(item.json)) ESP_LOGE(TAG, "spill live->SD failed");
+        if (!self->write_window_file_(item.json))
+          ESP_LOGE(TAG, "spill live->SD failed");
       }
     } else {
       vTaskDelay(pdMS_TO_TICKS(50));
@@ -400,13 +382,16 @@ void SdLogger::task_live_entry_(void *param) {
   }
 }
 
-void SdLogger::task_backlog_entry_(void *param) {
-  auto *self = static_cast<SdLogger *>(param);
+void SdLogger::task_backlog_entry_(void* param) {
+  auto* self = static_cast<SdLogger*>(param);
   self->publish_sync_backlog_(false);
   self->backlog_backoff_ms_ = 0;
 
   for (;;) {
-    if (!self->sync_online_) { vTaskDelay(pdMS_TO_TICKS(500)); continue; }
+    if (!self->sync_online_) {
+      vTaskDelay(pdMS_TO_TICKS(500));
+      continue;
+    }
 
     if (!self->has_backlog_files_()) {
       self->publish_sync_backlog_(false);
@@ -416,7 +401,10 @@ void SdLogger::task_backlog_entry_(void *param) {
     self->publish_sync_backlog_(true);
 
     std::string path;
-    if (!self->find_oldest_file_(path)) { vTaskDelay(pdMS_TO_TICKS(250)); continue; }
+    if (!self->find_oldest_file_(path)) {
+      vTaskDelay(pdMS_TO_TICKS(250));
+      continue;
+    }
 
     std::string body;
     if (!self->load_file_(path, body)) {
@@ -437,16 +425,22 @@ void SdLogger::task_backlog_entry_(void *param) {
 
     bool retryable = false;
     if (status < 0) retryable = true;
-    if (status == 408 || status == 425 || status == 429 || (status >= 500 && status <= 599)) retryable = true;
+    if (status == 408 || status == 425 || status == 429 ||
+        (status >= 500 && status <= 599))
+      retryable = true;
 
     if (!retryable) {
-      ESP_LOGW(TAG, "Backlog PUT non-retryable status=%d; keeping file", status);
+      ESP_LOGW(TAG, "Backlog PUT non-retryable status=%d; keeping file",
+               status);
     } else {
       ESP_LOGW(TAG, "Backlog PUT retryable status=%d: %s", status, err.c_str());
     }
 
-    if (self->backlog_backoff_ms_ == 0) self->backlog_backoff_ms_ = self->backoff_initial_ms_;
-    else self->backlog_backoff_ms_ = std::min<uint32_t>(self->backlog_backoff_ms_ * 2, self->backoff_max_ms_);
+    if (self->backlog_backoff_ms_ == 0)
+      self->backlog_backoff_ms_ = self->backoff_initial_ms_;
+    else
+      self->backlog_backoff_ms_ = std::min<uint32_t>(
+          self->backlog_backoff_ms_ * 2, self->backoff_max_ms_);
 
     uint32_t wait = self->backlog_backoff_ms_;
     uint32_t slept = 0;
