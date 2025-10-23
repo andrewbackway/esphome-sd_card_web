@@ -1,4 +1,4 @@
-#include "sd_file_server.h"
+#include "webserver_sd.h"
 #include <map>
 #include "esphome/core/log.h"
 #include "esphome/components/network/util.h"
@@ -14,7 +14,7 @@ SDFileServer::SDFileServer(web_server_base::WebServerBase *base) : base_(base) {
 void SDFileServer::setup() { this->base_->add_handler(this); }
 
 void SDFileServer::dump_config() {
-  ESP_LOGCONFIG(TAG, "SD File Server:");
+  ESP_LOGCONFIG(TAG, "Webserver SD:");
   ESP_LOGCONFIG(TAG, "  Address: %s:%u", network::get_use_address().c_str(), this->base_->get_port());
   ESP_LOGCONFIG(TAG, "  Url Prefix: %s", this->url_prefix_.c_str());
   ESP_LOGCONFIG(TAG, "  Root Path: %s", this->root_path_.c_str());
@@ -130,7 +130,6 @@ void SDFileServer::append_json_row(std::string &json, bool &first, const sd_mmc_
   json += "    \"is_directory\": " + (info.is_directory ? std::string("true") : std::string("false")) + ",\n";
   if (!info.is_directory) {
     json += "    \"size\": " + std::to_string(info.size) + ",\n";
-    json += "    \"size_formatted\": \"" + escape_json(sd_mmc_card::format_size(info.size)) + "\",\n";
   }
   json += "    \"uri\": \"" + escape_json(uri) + "\"\n";
   json += "  }";
