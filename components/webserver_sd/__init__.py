@@ -1,60 +1,55 @@
 import esphome.codegen as cg
 import esphome.config_validation as cv
-from esphome.const import CONF_ID
-from esphome.components import time as time_comp
-from esphome.components import sensor as sensor_comp
-from esphome.components import binary_sensor as binary_sensor_comp
+from esphome.components import web_server_base
+from esphome.components.web_server_base import CONF_WEB_SERVER_BASE_ID
+from esphome.const import (
+    CONF_ID
+)
+from esphome.core import coroutine_with_priority, CORE
+from .. import sd_mmc
 
-AUTO_LOAD = ["sensor", "binary_sensor", "time", "json"]
-sd_logger_ns = cg.esphome_ns.namespace("sd_logger")
-SdLogger = sd_logger_ns.class_("SdLogger", cg.Component)
+CONF_URL_PREFIX = "url_prefix"
+CONF_ROOT_PATH = "root_path"
+CONF_ENABLE_DELETION = "enable_deletion"
+CONF_ENABLE_DOWNLOAD = "enable_download"
+CONF_ENABLE_UPLOAD = "enable_upload"
 
-CONF_UPLOAD_URL = "upload_url"
-CONF_BEARER_TOKEN = "bearer_token"
-CONF_LOG_PATH = "log_path"
-CONF_BACKOFF_INITIAL = "backoff_initial"
-CONF_BACKOFF_MAX = "backoff_max"
-CONF_SENSORS = "sensors"
+AUTO_LOAD = ["web_server_base"]
+DEPENDENCIES = ["sd_mmc"]
 
-CONFIG_SCHEMA = cv.Schema(
-    {
-        cv.GenerateID(): cv.declare_id(SdLogger),
+sd_file_server_ns = cg.esphome_ns.namespace("webserver_sd")
+SDFileServer = sd_file_server_ns.class_("SDFileServer", cg.Component)
 
-        cv.Required("time_id"): cv.use_id(time_comp.RealTimeClock),
-        cv.Required(CONF_UPLOAD_URL): cv.string,
-        cv.Optional(CONF_BEARER_TOKEN, default=""): cv.string,
-        cv.Required(CONF_LOG_PATH): cv.string,
-        cv.Required(CONF_BACKOFF_INITIAL): cv.positive_time_period_milliseconds,
-        cv.Required(CONF_BACKOFF_MAX): cv.positive_time_period_milliseconds,
-
-        cv.Required(CONF_SENSORS): cv.ensure_list(cv.use_id(sensor_comp.Sensor)),
-    }
+CONFIG_SCHEMA = cv.All(
+    cv.require_esphome_version(2025,7,0),
+    cv.Schema(
+        {
+            cv.GenerateID(): cv.declare_id(SDFileServer),
+            cv.GenerateID(CONF_WEB_SERVER_BASE_ID): cv.use_id(
+                web_server_base.WebServerBase
+            ),
+            cv.GenerateID(sd_mmc.CONF_SD_MMC_CARD_ID): cv.use_id(sd_mmc.SdMmc),
+            cv.Optional(CONF_URL_PREFIX, default="file"): cv.string_strict,
+            cv.Optional(CONF_ROOT_PATH, default="/"): cv.string_strict,
+            cv.Optional(CONF_ENABLE_DELETION, default=False): cv.boolean,
+            cv.Optional(CONF_ENABLE_DOWNLOAD, default=False): cv.boolean,
+            cv.Optional(CONF_ENABLE_UPLOAD, default=False): cv.boolean,
+        }
+    ).extend(cv.COMPONENT_SCHEMA),
 )
 
+@coroutine_with_priority(45.0)
 async def to_code(config):
-    var = cg.new_Pvariable(config[CONF_ID])
+    paren = await cg.get_variable(config[CONF_WEB_SERVER_BASE_ID])
+    
+    var = cg.new_Pvariable(config[CONF_ID], paren)
     await cg.register_component(var, config)
-
-    time_var = await cg.get_variable(config["time_id"])
-    cg.add(var.set_time(time_var))
-
-    cg.add(var.set_upload_url(config[CONF_UPLOAD_URL]))
-    cg.add(var.set_bearer_token(config[CONF_BEARER_TOKEN]))
-    cg.add(var.set_log_path(config[CONF_LOG_PATH]))
-    cg.add(var.set_backoff_initial_ms(config[CONF_BACKOFF_INITIAL]))
-    cg.add(var.set_backoff_max_ms(config[CONF_BACKOFF_MAX]))
-
-    # Attach sensors
-    for s in config[CONF_SENSORS]:
-        sensor_var = await cg.get_variable(s)
-        cg.add(var.add_sensor(sensor_var))
-
-    # Create binary sensors automatically
-    sync_online = binary_sensor_comp.new_binary_sensor({
-        "name": "Sync Online"
-    })
-    sync_backlog = binary_sensor_comp.new_binary_sensor({
-        "name": "Sync Sending Backlog"
-    })
-    cg.add(var.set_sync_online_binary_sensor(await sync_online))
-    cg.add(var.set_sync_sending_backlog_binary_sensor(await sync_backlog))
+    sdmmc = await cg.get_variable(config[sd_mmc.CONF_SD_MMC_CARD_ID])
+    cg.add(var.set_sd_mmc(sdmmc))
+    cg.add(var.set_url_prefix(config[CONF_URL_PREFIX]))
+    cg.add(var.set_root_path(config[CONF_ROOT_PATH]))
+    cg.add(var.set_deletion_enabled(config[CONF_ENABLE_DELETION]))
+    cg.add(var.set_download_enabled(config[CONF_ENABLE_DOWNLOAD]))
+    cg.add(var.set_upload_enabled(config[CONF_ENABLE_UPLOAD]))
+    
+    cg.add_define("USE_SD_CARD_WEBSERVER")
