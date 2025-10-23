@@ -46,11 +46,13 @@ async def to_code(config):
     cg.add(var.set_backoff_initial_ms(config[CONF_BACKOFF_INITIAL]))
     cg.add(var.set_backoff_max_ms(config[CONF_BACKOFF_MAX]))
 
-    # Attach sensors
+    # sensors vector
+    sensor_vec = []
     for s in config[CONF_SENSORS]:
-        sensor_var = await cg.get_variable(s)
-        cg.add(var.add_sensor(sensor_var))
-
+        sv = await cg.get_variable(s)
+        sensor_vec.append(sv)
+    cg.add(var.set_sensors(sensor_vec))
+    
     # Auto-create "Sync Online" binary sensor
     sync_online = binary_sensor_comp.BinarySensor.new()
     sync_online.set_name("Sync Online")
