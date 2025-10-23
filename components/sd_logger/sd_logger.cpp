@@ -19,13 +19,15 @@ static const char *const TAG = "sd_logger";
 
 // ===== Utilities =====
 static std::string mac_as_device_id_() {
-  uint8_t mac[6] = {0};
-  esp_read_mac(mac, ESP_MAC_WIFI_STA);
+  uint8_t mac[6];
+  // Use ESPHome helper instead of esp_read_mac()
+  get_mac_address_raw(mac);  // pulls WiFi STA MAC or fallback
   char buf[18];
   sprintf(buf, "%02x:%02x:%02x:%02x:%02x:%02x",
           mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
   return std::string(buf);
 }
+
 
 // basic UUIDv4 from random_uint32()
 static std::string uuid_v4_() {
