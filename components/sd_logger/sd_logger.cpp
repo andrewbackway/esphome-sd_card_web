@@ -60,24 +60,61 @@ static bool ensure_dir_(const std::string &path) {
   if (stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) return true;
   return mkdir(path.c_str(), 0775) == 0;
 }
-
 static bool atomic_write_(const std::string &path, const std::string &data) {
   std::string tmp = path + ".tmp";
+
+  // 1. Attempt to open file
   int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0664);
-  if (fd < 0) return false;
-  ssize_t left = (ssize_t) data.size();
+  if (fd < 0) {
+    ESP_LOGE(TAG, "atomic_write: open(%s) failed (errno=%d: %s)", 
+             tmp.c_str(), errno, strerror(errno));
+    return false;
+  }
+
+  // 2. Write full contents
+  ssize_t left = (ssize_t)data.size();
   const char *p = data.c_str();
   while (left > 0) {
     ssize_t w = ::write(fd, p, left);
-    if (w <= 0) { ::close(fd); ::unlink(tmp.c_str()); return false; }
+    if (w <= 0) {
+      ESP_LOGE(TAG, "atomic_write: write(%s) failed (errno=%d: %s)", 
+               tmp.c_str(), errno, strerror(errno));
+      ::close(fd);
+      ::unlink(tmp.c_str());
+      return false;
+    }
     p += w;
     left -= w;
   }
-  if (fsync(fd) != 0) { ::close(fd); ::unlink(tmp.c_str()); return false; }
-  ::close(fd);
-  if (::rename(tmp.c_str(), path.c_str()) != 0) { ::unlink(tmp.c_str()); return false; }
+
+  // 3. Sync to disk
+  if (fsync(fd) != 0) {
+    ESP_LOGE(TAG, "atomic_write: fsync(%s) failed (errno=%d: %s)", 
+             tmp.c_str(), errno, strerror(errno));
+    ::close(fd);
+    ::unlink(tmp.c_str());
+    return false;
+  }
+
+  // 4. Close file
+  if (::close(fd) != 0) {
+    ESP_LOGE(TAG, "atomic_write: close(%s) failed (errno=%d: %s)", 
+             tmp.c_str(), errno, strerror(errno));
+    ::unlink(tmp.c_str());
+    return false;
+  }
+
+  // 5. Rename tmp → final
+  if (::rename(tmp.c_str(), path.c_str()) != 0) {
+    ESP_LOGE(TAG, "atomic_write: rename(%s -> %s) failed (errno=%d: %s)", 
+             tmp.c_str(), path.c_str(), errno, strerror(errno));
+    ::unlink(tmp.c_str());
+    return false;
+  }
+
   return true;
 }
+
 
 // ===== Component =====
 void SdLogger::setup() {
