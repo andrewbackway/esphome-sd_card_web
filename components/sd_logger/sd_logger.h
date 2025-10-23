@@ -17,9 +17,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-#ifdef USE_SDLOGGER_GZIP
-#include <zlib.h>
-#endif
+#include "miniz.h"
 
 namespace esphome {
 namespace sdlog {
@@ -51,9 +49,7 @@ class SDLogger : public Component {
   bool delete_file_(const std::string &path);
 
   bool upload_buffer_(const uint8_t *data, size_t len, bool is_gzip, int *http_status);
-#ifdef USE_SDLOGGER_GZIP
   bool gzip_compress_(const std::string &in, std::string &out);
-#endif
   void schedule_next_attempt_(bool success);
   void write_csv_line_(const std::string &sensor_object_id, float value);
 

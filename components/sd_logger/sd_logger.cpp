@@ -12,11 +12,7 @@ void SDLogger::dump_config() {
   ESP_LOGCONFIG(TAG, "  Log path: %s", this->log_path_.c_str());
   ESP_LOGCONFIG(TAG, "  Upload interval: %u ms", this->upload_interval_ms_);
   ESP_LOGCONFIG(TAG, "  Backoff initial/max: %u/%u ms", this->backoff_initial_ms_, this->backoff_max_ms_);
-#ifdef USE_SDLOGGER_GZIP
-  ESP_LOGCONFIG(TAG, "  Gzip: %s (zlib compiled)", this->gzip_enabled_ ? "ENABLED" : "disabled");
-#else
-  ESP_LOGCONFIG(TAG, "  Gzip: %s (zlib not available)", this->gzip_enabled_ ? "requested" : "disabled");
-#endif
+  ESP_LOGCONFIG(TAG, "  Gzip: %s (miniz included)", this->gzip_enabled_ ? "ENABLED" : "disabled");
   ESP_LOGCONFIG(TAG, "  Tracked sensors: %u", (unsigned) this->sensors_.size());
 }
 
@@ -101,35 +97,78 @@ bool SDLogger::delete_file_(const std::string &path) {
   return true;
 }
 
-#ifdef USE_SDLOGGER_GZIP
 bool SDLogger::gzip_compress_(const std::string &in, std::string &out) {
-  z_stream zs{};
-  if (deflateInit2(&zs, Z_BEST_SPEED, Z_DEFLATED, 15 + 16, 8, Z_DEFAULT_STRATEGY) != Z_OK) {
-    ESP_LOGE(TAG, "deflateInit2 failed");
+  // Build gzip stream: header + deflate(raw) + trailer(CRC32, ISIZE)
+  // GZIP header (10 bytes): ID1,ID2,CM,FLG,MTIME(4),XFL,OS
+  // ID1=0x1f, ID2=0x8b, CM=8(deflate), FLG=0
+  // MTIME=0 (unknown), XFL=0, OS=255 (unknown)
+  const uint8_t gz_header[10] = {0x1f, 0x8b, 0x08, 0x00, 0, 0, 0, 0, 0x00, 0xff};
+
+  // Reserve some space (header + input + overhead)
+  out.clear();
+  out.reserve( in.size() + 64 );
+
+  // Write header
+  out.insert(out.end(), (const char*)gz_header, (const char*)gz_header + sizeof(gz_header));
+
+  // ---- Raw DEFLATE using miniz tdefl (no zlib/gzip wrapper) ----
+  tdefl_compressor comp{};
+  // Use default level; write raw deflate (TDEFL_WRITE_ZLIB_HEADER off)
+  const int flags = TDEFL_DEFAULT_MAX_PROBES;
+
+  if (tdefl_init(&comp, nullptr, nullptr, flags) != TDEFL_STATUS_OKAY) {
+    ESP_LOGE(TAG, "tdefl_init failed");
     return false;
   }
-  out.clear();
-  out.resize(256);
-  zs.next_in = (Bytef *) in.data();
-  zs.avail_in = in.size();
 
-  int ret;
-  do {
-    if (zs.total_out >= out.size()) out.resize(out.size() * 2);
-    zs.next_out = (Bytef *) out.data() + zs.total_out;
-    zs.avail_out = out.size() - zs.total_out;
-    ret = deflate(&zs, zs.avail_in ? Z_NO_FLUSH : Z_FINISH);
-    if (ret == Z_STREAM_ERROR) {
-      deflateEnd(&zs);
+  const size_t in_size = in.size();
+  size_t in_ofs = 0;
+
+  // Compress in chunks to avoid big temporary buffers
+  const size_t CHUNK = 2048;
+  uint8_t out_chunk[CHUNK];
+
+  for (;;) {
+    size_t in_avail = in_size - in_ofs;
+    const void* in_ptr = (in_avail > 0) ? (in.data() + in_ofs) : nullptr;
+
+    size_t out_avail = CHUNK;
+    tdefl_status st = tdefl_compress(&comp,
+                                     in_ptr, &in_avail,
+                                     out_chunk, &out_avail,
+                                     (in_avail > 0) ? TDEFL_NO_FLUSH : TDEFL_FINISH);
+
+    // Append produced bytes
+    if (out_avail > 0) {
+      out.insert(out.end(), (const char*)out_chunk, (const char*)out_chunk + out_avail);
+    }
+
+    in_ofs += in_avail;
+    if (st == TDEFL_STATUS_DONE) break;
+    if (st < 0) {
+      ESP_LOGE(TAG, "tdefl_compress error: %d", (int) st);
       return false;
     }
-  } while (ret != Z_STREAM_END);
+  }
 
-  out.resize(zs.total_out);
-  deflateEnd(&zs);
+  // ---- Trailer: CRC32 (input) and ISIZE (input size mod 2^32), little-endian ----
+  uint32_t crc = mz_crc32(0, (const unsigned char*)in.data(), (mz_uint)in.size());
+  uint32_t isize = (uint32_t)(in.size() & 0xFFFFFFFFu);
+
+  // Append CRC32 LE
+  out.push_back((char)(crc & 0xFF));
+  out.push_back((char)((crc >> 8) & 0xFF));
+  out.push_back((char)((crc >> 16) & 0xFF));
+  out.push_back((char)((crc >> 24) & 0xFF));
+  // Append ISIZE LE
+  out.push_back((char)(isize & 0xFF));
+  out.push_back((char)((isize >> 8) & 0xFF));
+  out.push_back((char)((isize >> 16) & 0xFF));
+  out.push_back((char)((isize >> 24) & 0xFF));
+
   return true;
 }
-#endif
+
 
 bool SDLogger::upload_buffer_(const uint8_t *data, size_t len, bool is_gzip, int *http_status) {
   esp_http_client_config_t cfg{};
@@ -205,7 +244,6 @@ void SDLogger::run_upload_task_() {
     size_t body_len = raw.size();
     bool is_gzip = false;
 
-#ifdef USE_SDLOGGER_GZIP
     std::string gz;
     if (this->gzip_enabled_) {
       if (this->gzip_compress_(raw, gz)) {
@@ -216,11 +254,6 @@ void SDLogger::run_upload_task_() {
         ESP_LOGW(TAG, "Gzip requested but compression failed; sending plain CSV.");
       }
     }
-#else
-    if (this->gzip_enabled_) {
-      ESP_LOGW(TAG, "Gzip requested but zlib not compiled; sending plain CSV.");
-    }
-#endif
 
     int status = 0;
     bool ok = this->upload_buffer_(body, body_len, is_gzip, &status);

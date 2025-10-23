@@ -50,10 +50,6 @@ async def to_code(config):
     cg.add(var.set_backoff_max_ms(config[CONF_BACKOFF_MAX]))
     cg.add(var.set_gzip_enabled(config[CONF_GZIP]))
 
-    # Compile-time flag for gzip
-    if config[CONF_GZIP]:
-        cg.add_build_flag("-DUSE_SDLOGGER_GZIP")
-
     if CONF_TIME_ID in config:
         t = await cg.get_variable(config[CONF_TIME_ID])
         cg.add(var.set_time(t))
