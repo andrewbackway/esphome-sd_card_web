@@ -6,7 +6,7 @@
 #include <vector>
 
 namespace esphome {
-namespace sd_file_server {
+namespace webserver_sd {
 
 class SDFileServer : public Component, public AsyncWebHandler {
  public:
