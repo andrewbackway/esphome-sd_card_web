@@ -43,10 +43,10 @@ CONFIG_SCHEMA = cv.Schema(
         cv.Required(CONF_SENSORS): cv.ensure_list(cv.use_id(sensor_comp.Sensor)),
 
         cv.Optional(CONF_SYNC_ONLINE): binary_sensor.binary_sensor_schema(
-            name="Sync Online"
+            default_name="Sync Online"
         ),
         cv.Optional(CONF_SYNC_SENDING_BACKLOG): binary_sensor.binary_sensor_schema(
-            name="Sync Sending Backlog"
+            default_name="Sync Sending Backlog"
         ),
     }
 )
