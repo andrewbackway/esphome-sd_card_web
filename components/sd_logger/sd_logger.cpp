@@ -120,8 +120,6 @@ bool SDLogger::read_file_to_string_(const std::string &path, std::string &out) {
   while ((n = fread(buf, 1, sizeof(buf), fp)) > 0) {
     out.append(buf, buf + n);
     // Yield & feed WDT during long reads
-    esp_task_wdt_reset();
-    App.feed_wdt();
     vTaskDelay(pdMS_TO_TICKS(1));
   }
   fclose(fp);
@@ -171,8 +169,6 @@ bool SDLogger::gzip_compress_(const std::string &in, std::string &out) {
     in_ofs += in_avail;
 
     // Yield & feed watchdog in long loops
-    esp_task_wdt_reset();
-    App.feed_wdt();
     vTaskDelay(pdMS_TO_TICKS(1));
 
     if (st == TDEFL_STATUS_DONE) break;
@@ -222,12 +218,8 @@ bool SDLogger::upload_buffer_http_(const uint8_t *data, size_t len, bool is_gzip
   esp_http_client_set_post_field(client, (const char *) data, len);
 
   // Perform can block: feed watchdog before/after & yield
-  esp_task_wdt_reset();
-  App.feed_wdt();
   vTaskDelay(pdMS_TO_TICKS(1));
   esp_err_t err = esp_http_client_perform(client);
-  esp_task_wdt_reset();
-  App.feed_wdt();
 
   if (err != ESP_OK) {
     ESP_LOGW(TAG, "HTTP perform failed: %s", esp_err_to_name(err));
@@ -256,13 +248,7 @@ void SDLogger::schedule_next_attempt_(bool success) {
 void SDLogger::upload_task_trampoline_(void *param) {
   auto *self = static_cast<SDLogger *>(param);
 
-  // Register this task with the ESP-IDF Task Watchdog
-  esp_task_wdt_add(nullptr);
-
   self->run_upload_task_();
-
-  // Unregister before exiting
-  esp_task_wdt_delete(nullptr);
 
   self->task_in_progress_ = false;
   self->upload_task_ = nullptr;
@@ -330,9 +316,6 @@ void SDLogger::run_upload_task_() {
       break;  // obey backoff; don't hammer server
     }
 
-    // Yield between files
-    esp_task_wdt_reset();
-    App.feed_wdt();
     vTaskDelay(pdMS_TO_TICKS(20));
   }
 
