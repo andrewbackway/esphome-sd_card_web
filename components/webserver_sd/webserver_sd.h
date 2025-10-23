@@ -1,7 +1,7 @@
 #pragma once
 #include "esphome/core/component.h"
 #include "esphome/components/web_server_base/web_server_base.h"
-#include "../sd_mmc/sd_mmc_card.h"
+#include "../sd_mmc/sd_mmc.h"
 #include <string>
 #include <vector>
 
@@ -20,14 +20,14 @@ class SDFileServer : public Component, public AsyncWebHandler {
 
   void set_url_prefix(const std::string &prefix);
   void set_root_path(const std::string &path);
-  void set_sd_mmc_card(sd_mmc_card::SdMmc *card);
+  void set_sd_mmc(sd_mmc::SdMmc *card);
   void set_deletion_enabled(bool allow);
   void set_download_enabled(bool allow);
   void set_upload_enabled(bool allow);
 
  protected:
   web_server_base::WebServerBase *base_ = nullptr;
-  sd_mmc_card::SdMmc *sd_mmc_card_ = nullptr;
+  sd_mmc::SdMmc *sd_mmc_ = nullptr;
 
   std::string url_prefix_;
   std::string root_path_;
@@ -38,8 +38,8 @@ class SDFileServer : public Component, public AsyncWebHandler {
   std::string build_prefix() const;
   std::string extract_path_from_url(const std::string &url) const;
   std::string build_absolute_path(std::string relative_path) const;
-  void append_json_row(std::string &json, bool &first, const sd_mmc_card::FileInfo &info) const;
-  void append_json_row(AsyncResponseStream *response, const sd_mmc_card::FileInfo &info) const;
+  void append_json_row(std::string &json, bool &first, const sd_mmc::FileInfo &info) const;
+  void append_json_row(AsyncResponseStream *response, const sd_mmc::FileInfo &info) const;
   void handle_index(AsyncWebServerRequest *request, const std::string &path) const;
   void handle_get(AsyncWebServerRequest *request) const;
   void handle_delete(AsyncWebServerRequest *request);
