@@ -42,12 +42,13 @@ CONFIG_SCHEMA = cv.Schema(
 
         cv.Required(CONF_SENSORS): cv.ensure_list(cv.use_id(sensor_comp.Sensor)),
 
-        cv.Optional(CONF_SYNC_ONLINE): binary_sensor_comp.binary_sensor_schema(
-            default_name="Sync Online"
-        ),
-        cv.Optional(CONF_SYNC_SENDING_BACKLOG): binary_sensor_comp.binary_sensor_schema(
-            default_name="Sync Sending Backlog"
-        ),
+        cv.Optional(CONF_SYNC_ONLINE): binary_sensor_comp.binary_sensor_schema().extend({
+            cv.Optional("name", default="Sync Online"): cv.string,
+        }),
+
+        cv.Optional(CONF_SYNC_SENDING_BACKLOG): binary_sensor_comp.binary_sensor_schema().extend({
+            cv.Optional("name", default="Sync Sending Backlog"): cv.string,
+        }),
     }
 )
 
