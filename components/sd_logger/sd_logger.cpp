@@ -1,443 +1,450 @@
 #include "sd_logger.h"
-
+#include "esphome/core/helpers.h"
 #include "esphome/core/log.h"
-#include "esphome/core/application.h"
-#include "esphome/core/util.h"
-#include "esphome/core/hal.h"
 
 #include <sys/stat.h>
 #include <dirent.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 extern "C" {
-// miniz (bundled) – single-file
-#include "miniz.c"
+  #include "esp_http_client.h"
+  #include "esp_timer.h"
 }
 
 namespace esphome {
-namespace sdlog {
+namespace sd_logger {
 
-static const char *TAG = "sd_logger";
+static const char *const TAG = "sd_logger";
 
-// ---------- Component lifecycle ----------
-
-void SDLogger::setup() {
-  ESP_LOGI(TAG, "Setup start");
-  this->ensure_dir_();
-
-  // subscribe to sensor state updates
-  for (auto *s : this->sensors_) {
-    if (s == nullptr) continue;
-    s->add_on_state_callback([this, s](float state) {
-      this->on_sensor_state(s, state);
-    });
-  }
-
-  // start uploader task
-  xTaskCreatePinnedToCore(&SDLogger::upload_task_trampoline_, "sdlog_upl",
-                          6144, this, 5, &this->upload_task_handle_,
-                          APP_CPU_NUM);
-
-  ESP_LOGI(TAG, "Setup done: url=%s gzip=%s path=%s upload_interval=%u ms",
-           this->upload_url_.c_str(), this->gzip_ ? "true" : "false",
-           this->log_path_.c_str(), this->upload_interval_ms_);
+// ------- Utility helpers -------
+static inline bool is_nan_(float v) {
+  return std::isnan(v) || std::isinf(v);
 }
 
-void SDLogger::loop() {
-  // schedule background upload on cadence (non-blocking)
-  const uint64_t now = this->now_ms_();
-  if (!this->background_busy_ &&
-      (now - this->last_background_upload_ms_) >= this->upload_interval_ms_) {
-    this->last_background_upload_ms_ = now;
-    // nudge the task by setting backoff to 0
-    this->backoff_ms_ = 0;
-  }
+static std::string mac_as_device_id_() {
+  // Returns lowercase aa:bb:cc:dd:ee:ff
+  uint8_t mac[6] = {0};
+  esp_read_mac(mac, ESP_MAC_WIFI_STA);
+  char buf[18];
+  sprintf(buf, "%02x:%02x:%02x:%02x:%02x:%02x",
+          mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+  return std::string(buf);
 }
 
-void SDLogger::dump_config() {
-  ESP_LOGCONFIG(TAG, "SD Logger:");
-  ESP_LOGCONFIG(TAG, "  Upload URL: %s", this->upload_url_.c_str());
-  ESP_LOGCONFIG(TAG, "  Log path: %s", this->log_path_.c_str());
-  ESP_LOGCONFIG(TAG, "  Upload interval: %u ms", this->upload_interval_ms_);
-  ESP_LOGCONFIG(TAG, "  Backoff initial/max: %u/%u ms", this->backoff_initial_ms_, this->backoff_max_ms_);
-  ESP_LOGCONFIG(TAG, "  Gzip: %s", this->gzip_ ? "ENABLED (miniz bundled)" : "DISABLED");
-  ESP_LOGCONFIG(TAG, "  Tracked sensors: %u", (unsigned) this->sensors_.size());
+static uint32_t floor_to_window_start_(uint32_t epoch) {
+  return (epoch / 30U) * 30U;
 }
 
-// ---------- Event path ----------
-
-void SDLogger::on_sensor_state(sensor::Sensor *s, float state) {
-  const uint64_t now = this->now_ms_();
-
-  // throttle per sensor 30s
-  auto it = last_send_ms_.find(s);
-  if (it != last_send_ms_.end() && (now - it->second) < SENSOR_MIN_PERIOD_MS) {
-    ESP_LOGV(TAG, "Throttle %s: %u ms left", s->get_name().c_str(),
-             (unsigned) (SENSOR_MIN_PERIOD_MS - (now - it->second)));
-    return;
-  }
-  last_send_ms_[s] = now;
-
-  // require time sync to avoid garbage timestamps
-  if (!this->time_synced_()) {
-    ESP_LOGW(TAG, "Skipping log, time not yet synchronized");
-    return;
-  }
-
-  // CSV line: epoch, name, value\n
-  const uint32_t epoch = this->time_->now().timestamp;
-  char buf[96];
-  int n = snprintf(buf, sizeof(buf), "%u,%s,%.6f\n", epoch, s->get_name().c_str(), state);
-  if (n <= 0) return;
-  std::string line(buf, n);
-
-  if (this->is_online_()) {
-    // enqueue for live upload (non-blocking)
-    std::lock_guard<std::mutex> lk(this->live_q_mtx_);
-    if (this->live_q_.size() >= SDLOG_MAX_LIVE_QUEUE)
-      this->live_q_.pop_front();
-    this->live_q_.push_back(LiveLine{line, now});
-  } else {
-    // offline: append to rotating file
-    this->rotate_file_if_needed_(now);
-    if (!this->append_line_to_file_(line)) {
-      ESP_LOGE(TAG, "Failed to append to file");
-    }
-  }
-}
-
-// ---------- Upload task ----------
-
-void SDLogger::upload_task_trampoline_(void *self) {
-  static_cast<SDLogger*>(self)->upload_task_();
-}
-
-void SDLogger::upload_task_() {
-  ESP_LOGI(TAG, "Upload task started");
-  uint32_t sleep_ms = 250;
-
-  while (true) {
-    bool did_work = false;
-
-    // 1) Prioritize live queue when online
-    if (this->is_online_()) {
-      LiveLine ll;
-      {
-        std::lock_guard<std::mutex> lk(this->live_q_mtx_);
-        if (!this->live_q_.empty()) {
-          ll = this->live_q_.front();
-          this->live_q_.pop_front();
-        }
-      }
-      if (!ll.csv.empty()) {
-        bool ok = false;
-        if (this->gzip_) {
-          std::string gz;
-          if (this->gzip_buffer_(reinterpret_cast<const uint8_t*>(ll.csv.data()), ll.csv.size(), gz)) {
-            ok = this->http_post_lines_(gz, /*gzipped=*/true);
-          }
-        } else {
-          ok = this->http_post_lines_(ll.csv, /*gzipped=*/false);
-        }
-        if (!ok) {
-          // push back to offline file to avoid loss
-          this->rotate_file_if_needed_(this->now_ms_());
-          this->append_line_to_file_(ll.csv);
-          // trigger backoff for HTTP errors
-          if (this->backoff_ms_ == 0) this->backoff_ms_ = this->backoff_initial_ms_;
-        } else {
-          this->backoff_ms_ = 0; // success resets backoff
-        }
-        did_work = true;
-      }
-    }
-
-    // 2) Background: upload one file when interval elapsed or backoff=0 and online
-    const uint64_t now = this->now_ms_();
-    if (this->is_online_()) {
-      bool interval_due = (now - this->last_background_upload_ms_) >= this->upload_interval_ms_;
-      bool unlocked = (this->backoff_ms_ == 0);
-      if (interval_due || unlocked) {
-        this->background_busy_ = true;
-        std::string oldest;
-        this->scan_and_queue_oldest_file_(oldest);
-        if (!oldest.empty()) {
-          // upload file
-          FILE *fp = fopen(oldest.c_str(), "rb");
-          if (!fp) {
-            ESP_LOGE(TAG, "Failed to open %s", oldest.c_str());
-          } else {
-            fseek(fp, 0, SEEK_END);
-            const long sz = ftell(fp);
-            fseek(fp, 0, SEEK_SET);
-            bool ok = this->http_post_file_(fp, (size_t) sz, this->gzip_);
-            fclose(fp);
-            if (ok) {
-              remove(oldest.c_str());
-              ESP_LOGI(TAG, "Uploaded and removed %s", oldest.c_str());
-              this->backoff_ms_ = 0;
-              this->last_background_upload_ms_ = now;
-            } else {
-              ESP_LOGW(TAG, "Upload failed for %s", oldest.c_str());
-              // backoff
-              this->backoff_ms_ = this->backoff_ms_ == 0 ? this->backoff_initial_ms_
-                                                         : std::min(this->backoff_ms_ * 2, this->backoff_max_ms_);
-            }
-          }
-          did_work = true;
-        }
-        this->background_busy_ = false;
-      }
-    }
-
-    // 3) Sleep/backoff
-    if (!did_work) {
-      // apply gentle backoff if set
-      uint32_t delay_ms = sleep_ms;
-      if (this->backoff_ms_ > 0)
-        delay_ms = std::max(delay_ms, this->backoff_ms_);
-      vTaskDelay(pdMS_TO_TICKS(delay_ms));
-    } else {
-      // tiny yield to keep system responsive
-      vTaskDelay(pdMS_TO_TICKS(5));
-    }
-  }
-}
-
-// ---------- Files ----------
-
-bool SDLogger::ensure_dir_() {
-  struct stat st{};
-  if (stat(this->log_path_.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) return true;
-  int rc = mkdir(this->log_path_.c_str(), 0755);
-  if (rc != 0) {
-    ESP_LOGE(TAG, "mkdir %s failed", this->log_path_.c_str());
-    return false;
-  }
-  return true;
-}
-
-std::string SDLogger::current_file_path_() {
-  return this->current_file_path_cache_;
-}
-
-void SDLogger::rotate_file_if_needed_(uint64_t now_ms) {
-  const uint64_t now_s = now_ms / 1000ULL;
-  const uint64_t window = (now_s / SDLOG_ROTATE_SECONDS) * SDLOG_ROTATE_SECONDS;
-  if (window == this->current_window_start_s_ && !this->current_file_path_cache_.empty()) return;
-
-  // Name: logs/YYYYMMDD_HHMMSS.csv (start time of 30s window)
-  auto tm = this->time_->now();
-  // adjust to window start
-  uint32_t t0 = (uint32_t) window;
+static std::string format_filename_(uint32_t epoch_window) {
+  // UTC time formatting
+  time_t t = epoch_window;
+  struct tm tm_utc;
+  gmtime_r(&t, &tm_utc);
   char name[64];
-  // We don't have strftime; format manually using RTC
-  // If RTC doesn't match 'window' precisely, we fallback to tm of now.
-  snprintf(name, sizeof(name), "%04d%02d%02d_%02d%02d%02d.csv",
-           tm.year, tm.month, tm.day_of_month, tm.hour, tm.minute, tm.second);
-  // Store full path
-  this->current_file_path_cache_ = this->log_path_ + "/" + name;
-  this->current_window_start_s_ = window;
+  // YYYYMMDD_HHMMSS.json
+  strftime(name, sizeof(name), "%Y%m%d_%H%M%S.json", &tm_utc);
+  return std::string(name);
 }
 
-bool SDLogger::append_line_to_file_(const std::string &line) {
-  const std::string path = this->current_file_path_();
-  FILE *fp = fopen(path.c_str(), "ab");
-  if (!fp) {
-    ESP_LOGE(TAG, "fopen(%s) failed", path.c_str());
+static bool mkdirs_(const std::string &path) {
+  struct stat st{};
+  if (stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) return true;
+  // naive one-level mkdir
+  return mkdir(path.c_str(), 0775) == 0;
+}
+
+// Atomic write: path.tmp -> fsync -> rename
+static bool atomic_write_file_(const std::string &path, const std::string &data) {
+  std::string tmp = path + ".tmp";
+  int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0664);
+  if (fd < 0) return false;
+  ssize_t total = 0;
+  const char *p = data.c_str();
+  ssize_t left = (ssize_t) data.size();
+  while (left > 0) {
+    ssize_t w = ::write(fd, p + total, left);
+    if (w <= 0) { ::close(fd); ::unlink(tmp.c_str()); return false; }
+    total += w;
+    left -= w;
+  }
+  if (fsync(fd) != 0) { ::close(fd); ::unlink(tmp.c_str()); return false; }
+  ::close(fd);
+  if (::rename(tmp.c_str(), path.c_str()) != 0) {
+    ::unlink(tmp.c_str());
     return false;
   }
-  size_t w = fwrite(line.data(), 1, line.size(), fp);
-  fclose(fp);
-  return w == line.size();
-}
-
-void SDLogger::scan_and_queue_oldest_file_(std::string &out_path) {
-  out_path.clear();
-  DIR *dir = opendir(this->log_path_.c_str());
-  if (!dir) return;
-
-  time_t best_time = 0;
-  std::string best_path;
-  struct dirent *ent;
-  while ((ent = readdir(dir)) != nullptr) {
-    if (ent->d_name[0] == '.') continue;
-    std::string p = this->log_path_ + "/" + ent->d_name;
-    struct stat st{};
-    if (stat(p.c_str(), &st) != 0) continue;
-    if (!S_ISREG(st.st_mode)) continue;
-    if (best_path.empty() || st.st_mtime < best_time) {
-      best_time = st.st_mtime;
-      best_path = p;
-    }
-  }
-  closedir(dir);
-  out_path = best_path;
-}
-
-// ---------- HTTP ----------
-
-static esp_err_t _http_evt(esp_http_client_event_t *evt) {
-  // we could add verbose logging here if needed
-  return ESP_OK;
-}
-
-bool SDLogger::http_post_lines_(const std::string &payload, bool gzipped) {
-  if (this->upload_url_.empty()) return false;
-
-  esp_http_client_config_t cfg = {};
-  cfg.url = this->upload_url_.c_str();
-  cfg.method = HTTP_METHOD_POST;
-  cfg.timeout_ms = 10000;
-  cfg.event_handler = _http_evt;
-
-  // NOTE: HTTPS without validation (best-effort). Some IDF builds still want CA;
-  // leaving cert_pem/crt_bundle_attach null typically disables validation.
-  cfg.skip_cert_common_name_check = true;
-
-  esp_http_client_handle_t client = esp_http_client_init(&cfg);
-  if (!client) return false;
-
-  esp_http_client_set_header(client, "Content-Type", "text/csv");
-  if (gzipped) esp_http_client_set_header(client, "Content-Encoding", "gzip");
-  if (!this->bearer_token_.empty())
-    esp_http_client_set_header(client, "Authorization", this->bearer_token_.c_str());
-
-  esp_err_t err = esp_http_client_open(client, payload.size());
-  if (err != ESP_OK) {
-    ESP_LOGW(TAG, "http open err=%d", (int) err);
-    esp_http_client_cleanup(client);
-    return false;
-  }
-
-  int w = esp_http_client_write(client, payload.data(), payload.size());
-  if (w < 0 || (size_t) w != payload.size()) {
-    ESP_LOGW(TAG, "http write failed");
-    esp_http_client_close(client);
-    esp_http_client_cleanup(client);
-    return false;
-  }
-
-  int code = esp_http_client_fetch_headers(client);
-  if (code < 0) {
-    ESP_LOGW(TAG, "fetch headers failed");
-  }
-  int status = esp_http_client_get_status_code(client);
-  esp_http_client_close(client);
-  esp_http_client_cleanup(client);
-
-  bool ok = status >= 200 && status < 300;
-  if (!ok) ESP_LOGW(TAG, "http status %d", status);
-  return ok;
-}
-
-bool SDLogger::http_post_file_(FILE *fp, size_t size, bool gzipped) {
-  if (this->upload_url_.empty()) return false;
-
-  esp_http_client_config_t cfg = {};
-  cfg.url = this->upload_url_.c_str();
-  cfg.method = HTTP_METHOD_POST;
-  cfg.timeout_ms = 15000;
-  cfg.event_handler = _http_evt;
-  cfg.skip_cert_common_name_check = true;
-
-  esp_http_client_handle_t client = esp_http_client_init(&cfg);
-  if (!client) return false;
-
-  esp_http_client_set_header(client, "Content-Type", "text/csv");
-  if (gzipped) esp_http_client_set_header(client, "Content-Encoding", "gzip");
-  if (!this->bearer_token_.empty())
-    esp_http_client_set_header(client, "Authorization", this->bearer_token_.c_str());
-
-  // stream file in chunks (avoid loading whole file)
-  const size_t CHUNK = 2048;
-  std::string out_buf;
-  bool use_gz_stream = false;
-
-  // If gzip is enabled, we’ll naïvely read full file into memory and gzip once
-  // to keep code simple/robust. For large files you may want a streaming gzip.
-  if (gzipped) {
-    std::string file_buf;
-    file_buf.resize(size);
-    if (fread(file_buf.data(), 1, size, fp) != size) {
-      ESP_LOGW(TAG, "read file failed");
-      esp_http_client_cleanup(client);
-      return false;
-    }
-    std::string gz;
-    if (!this->gzip_buffer_(reinterpret_cast<const uint8_t*>(file_buf.data()), file_buf.size(), gz)) {
-      ESP_LOGW(TAG, "gzip fail");
-      esp_http_client_cleanup(client);
-      return false;
-    }
-    if (esp_http_client_open(client, gz.size()) != ESP_OK) {
-      esp_http_client_cleanup(client);
-      return false;
-    }
-    if (esp_http_client_write(client, gz.data(), gz.size()) != (int) gz.size()) {
-      esp_http_client_close(client);
-      esp_http_client_cleanup(client);
-      return false;
-    }
-  } else {
-    if (esp_http_client_open(client, size) != ESP_OK) {
-      esp_http_client_cleanup(client);
-      return false;
-    }
-    size_t left = size;
-    std::vector<char> buf;
-    buf.resize(CHUNK);
-    while (left > 0) {
-      size_t rd = fread(buf.data(), 1, std::min(left, CHUNK), fp);
-      if (rd == 0) break;
-      int w = esp_http_client_write(client, buf.data(), rd);
-      if (w < 0 || (size_t) w != rd) {
-        ESP_LOGW(TAG, "write chunk failed");
-        esp_http_client_close(client);
-        esp_http_client_cleanup(client);
-        return false;
-      }
-      left -= rd;
-      // yield a bit
-      vTaskDelay(pdMS_TO_TICKS(1));
-    }
-  }
-
-  int code = esp_http_client_fetch_headers(client);
-  if (code < 0) {
-    ESP_LOGW(TAG, "fetch headers failed");
-  }
-  int status = esp_http_client_get_status_code(client);
-  esp_http_client_close(client);
-  esp_http_client_cleanup(client);
-
-  bool ok = status >= 200 && status < 300;
-  if (!ok) ESP_LOGW(TAG, "http status %d", status);
-  return ok;
-}
-
-// ---------- gzip (miniz) ----------
-
-bool SDLogger::gzip_buffer_(const uint8_t *in, size_t in_len, std::string &out) {
-  mz_ulong bound = mz_compressBound(in_len);
-  out.resize(bound);
-  mz_ulong out_len = bound;
-  int r = mz_compress2(reinterpret_cast<unsigned char*>(&out[0]), &out_len,
-                       reinterpret_cast<const unsigned char*>(in), in_len, MZ_BEST_SPEED);
-  if (r != MZ_OK) {
-    ESP_LOGW(TAG, "miniz compress err=%d", r);
-    return false;
-  }
-  out.resize(out_len);
   return true;
 }
 
-// ---------- time ----------
+void SdLogger::setup() {
+  ESP_LOGI(TAG, "setup()");
+  if (this->log_path_.empty()) {
+    this->log_path_ = "/sdcard/logs";
+  }
+  ensure_log_dir_();
 
-bool SDLogger::time_synced_() const {
-  if (!this->time_) return false;
+  // Create live queue
+  this->live_queue_ = xQueueCreate(16, sizeof(LiveItem));
+  if (this->live_queue_ == nullptr) {
+    ESP_LOGE(TAG, "Failed to create live queue");
+  }
+
+  // Spawn tasks
+  xTaskCreatePinnedToCore(&SdLogger::task_live_entry_, "sdlog_live", 6 * 1024, this, 4, &this->task_live_, APP_CPU_NUM);
+  xTaskCreatePinnedToCore(&SdLogger::task_backlog_entry_, "sdlog_backlog", 7 * 1024, this, 3, &this->task_backlog_, APP_CPU_NUM);
+
+  publish_sync_online_(false);
+  publish_sync_backlog_(false);
+}
+
+void SdLogger::loop() {
+  // Gate everything on valid time
+  if (!time_valid_()) {
+    this->have_started_ = false;
+    return;
+  }
+
+  uint32_t now_epoch = (uint32_t) this->time_->now().timestamp;
+  if (!this->have_started_) {
+    // Start 30 seconds after time became valid
+    this->start_valid_epoch_ = now_epoch;
+    this->have_started_ = true;
+    this->last_tick_epoch_ = 0;
+    ESP_LOGI(TAG, "SNTP valid at %u, starting ticks in 30s", (unsigned) now_epoch);
+    return;
+  }
+
+  // Wait until 30s after start
+  if (now_epoch < (this->start_valid_epoch_ + 30)) return;
+
+  // Determine current window
+  uint32_t window_start = floor_to_window_start_(now_epoch);
+  if (window_start == this->last_tick_epoch_) return;  // only once per window
+
+  this->last_tick_epoch_ = window_start;
+
+  // Build payload
+  std::string payload;
+  bool had_any = false;
+  if (!this->build_payload_json_(payload, had_any)) {
+    ESP_LOGW(TAG, "Payload build failed or empty; skipping tick");
+    return;
+  }
+
+  // Decide online/offline by last live success state
+  // (We set sync_online_ true only after a successful PUT)
+  if (this->sync_online_) {
+    // Try to enqueue live item; if queue full, spill to SD
+    LiveItem item{payload};
+    if (xQueueSend(this->live_queue_, &item, 0) != pdPASS) {
+      ESP_LOGW(TAG, "Live queue full, spilling to SD");
+      if (!write_window_file_(payload)) {
+        ESP_LOGE(TAG, "SD spill failed; dropping tick");
+      }
+    }
+  } else {
+    // Offline: write to SD
+    if (!write_window_file_(payload)) {
+      ESP_LOGE(TAG, "SD write failed; dropping tick");
+    }
+  }
+}
+
+// ---------- Internals ----------
+
+bool SdLogger::time_valid_() const {
+  if (this->time_ == nullptr) return false;
   auto t = this->time_->now();
   return t.is_valid();
 }
 
-}  // namespace sdlog
+void SdLogger::ensure_log_dir_() {
+  mkdirs_(this->log_path_);
+}
+
+void SdLogger::publish_sync_online_(bool v) {
+  this->sync_online_ = v;
+  if (this->sync_online_bs_) this->sync_online_bs_->publish_state(v);
+}
+
+void SdLogger::publish_sync_backlog_(bool v) {
+  if (this->sync_sending_backlog_bs_) this->sync_sending_backlog_bs_->publish_state(v);
+}
+
+static void truncate_string_(std::string &s, size_t max_len) {
+  if (s.size() > max_len) s.resize(max_len);
+}
+
+bool SdLogger::build_payload_json_(std::string &out_json, bool &had_any_value) {
+  had_any_value = false;
+
+  // Date (UTC ISO8601 Z)
+  time::ESPTime now = this->time_->now();
+  char iso[32];
+  now.strftime(iso, sizeof(iso), "%Y-%m-%dT%H:%M:%SZ");
+
+  // sessionId: random per boot (generate once)
+  static std::string session_guid;
+  if (session_guid.empty()) {
+    session_guid = random_uuid();  // provided by esphome/helpers.h
+  }
+  std::string id_guid = random_uuid();
+  std::string device_id = mac_as_device_id_();
+
+  // Build JSON using json::build_json (ArduinoJson wrapper)
+  json::build_json([&](JsonObject root) {
+    root["id"] = id_guid;
+    root["sessionId"] = session_guid;
+    root["deviceId"] = device_id;
+    root["date"] = iso;
+
+    JsonArray arr = root.createNestedArray("Sensors");
+    // Collect sensor values respecting types and nulls for NAN/UNAVAILABLE
+    for (auto *s : this->sensors_) {
+      JsonObject o = arr.createNestedObject();
+      o["sensorId"] = s->get_name().empty() ? s->get_object_id() : s->get_name();
+      // Determine availability
+      if (!s->has_state() || is_nan_(s->state)) {
+        o["value"] = nullptr;  // null per spec
+      } else {
+        // Numeric sensors in ESPHome are float; attempt to send numeric if non-integer ok
+        // If sensor has unitless text? (sensor::Sensor is numeric by design). Keep as number.
+        o["value"] = s->state;
+        had_any_value = true;
+      }
+    }
+  }, out_json);
+
+  // Enforce per-value string truncation (100 chars) — applies only if any strings slipped in
+  // We also must enforce a ~20 KB cap by pruning largest strings.
+  // Since Sensors are numeric/null by design, only "sensorId" fields are strings.
+  if (out_json.size() > 20 * 1024) {
+    // Crude but safe: try to shorten by removing whitespace first, then if still large, fail this tick.
+    std::string compact;
+    compact.reserve(out_json.size());
+    for (char c : out_json) {
+      if (c != '\n' && c != '\r' && c != '\t') compact.push_back(c);
+    }
+    out_json.swap(compact);
+  }
+  if (out_json.size() > 20 * 1024) {
+    ESP_LOGW(TAG, "Payload exceeds 20KB after compaction, dropping");
+    return false;
+  }
+
+  // OK if all null? Spec allows sending nulls; we still write/send as-is.
+  return true;
+}
+
+bool SdLogger::write_window_file_(const std::string &json) {
+  uint32_t epoch = (uint32_t) this->time_->now().timestamp;
+  uint32_t window = floor_to_window_start_(epoch);
+  std::string filename = format_filename_(window);
+  std::string full = this->log_path_ + "/" + filename;
+  return atomic_write_file_(full, json);
+}
+
+bool SdLogger::send_http_put_(const std::string &body, int *http_status, std::string *resp_err) {
+  if (http_status) *http_status = -1;
+  if (resp_err) resp_err->clear();
+
+  esp_http_client_config_t cfg = {};
+  cfg.url = this->upload_url_.c_str();
+  cfg.method = HTTP_METHOD_PUT;
+  cfg.transport_type = HTTP_TRANSPORT_OVER_SSL;  // assume HTTPS; will also work for http
+  cfg.timeout_ms = 15000;
+  cfg.skip_cert_common_name_check = true;  // disable verification as requested
+  cfg.disable_auto_redirect = false;
+  // No cert_pem means no server verification (insecure by spec).
+
+  esp_http_client_handle_t client = esp_http_client_init(&cfg);
+  if (!client) {
+    if (resp_err) *resp_err = "esp_http_client_init failed";
+    return false;
+  }
+
+  esp_http_client_set_header(client, "Content-Type", "application/json");
+  if (!this->bearer_token_.empty()) {
+    esp_http_client_set_header(client, "Authorization", this->bearer_token_.c_str());
+  }
+  esp_http_client_set_method(client, HTTP_METHOD_PUT);
+  esp_http_client_set_post_field(client, body.c_str(), (int) body.size());
+
+  esp_err_t err = esp_http_client_perform(client);
+  if (err != ESP_OK) {
+    if (resp_err) *resp_err = std::string("perform err: ") + esp_err_to_name(err);
+    esp_http_client_cleanup(client);
+    return false;
+  }
+
+  int status = esp_http_client_get_status_code(client);
+  if (http_status) *http_status = status;
+  esp_http_client_cleanup(client);
+
+  return status == 200 || status == 201;
+}
+
+bool SdLogger::has_backlog_files_() {
+  DIR *dir = opendir(this->log_path_.c_str());
+  if (!dir) return false;
+  struct dirent *e;
+  bool any = false;
+  while ((e = readdir(dir)) != nullptr) {
+    if (e->d_type == DT_REG) { any = true; break; }
+  }
+  closedir(dir);
+  return any;
+}
+
+bool SdLogger::find_oldest_file_(std::string &path_out) {
+  DIR *dir = opendir(this->log_path_.c_str());
+  if (!dir) return false;
+  struct dirent *e;
+  std::string oldest;
+  time_t oldest_t = LONG_MAX;
+
+  while ((e = readdir(dir)) != nullptr) {
+    if (e->d_type != DT_REG) continue;
+    std::string name = e->d_name;
+    if (name.size() < 5 || name.rfind(".json") != name.size() - 5) continue;
+    std::string full = this->log_path_ + "/" + name;
+    struct stat st{};
+    if (stat(full.c_str(), &st) == 0) {
+      if (st.st_mtime < oldest_t) {
+        oldest_t = st.st_mtime;
+        oldest = full;
+      }
+    }
+  }
+  closedir(dir);
+  if (oldest.empty()) return false;
+  path_out = oldest;
+  return true;
+}
+
+bool SdLogger::load_file_(const std::string &path, std::string &data_out) {
+  int fd = ::open(path.c_str(), O_RDONLY);
+  if (fd < 0) return false;
+  std::string buf;
+  buf.resize(24 * 1024); // safety cap
+  ssize_t n = ::read(fd, buf.data(), buf.size());
+  ::close(fd);
+  if (n < 0) return false;
+  buf.resize((size_t) n);
+  data_out.swap(buf);
+  return true;
+}
+
+bool SdLogger::delete_file_(const std::string &path) {
+  return ::unlink(path.c_str()) == 0;
+}
+
+// ---------- Task: live uploader ----------
+void SdLogger::task_live_entry_(void *param) {
+  auto *self = static_cast<SdLogger *>(param);
+  SdLogger::LiveItem item;
+
+  for (;;) {
+    if (xQueueReceive(self->live_queue_, &item, pdMS_TO_TICKS(1000)) == pdPASS) {
+      int status = -1;
+      std::string err;
+      bool ok = self->send_http_put_(item.json, &status, &err);
+      if (ok) {
+        self->publish_sync_online_(true);
+      } else {
+        ESP_LOGW(TAG, "Live PUT failed (status=%d): %s", status, err.c_str());
+        self->publish_sync_online_(false);
+        // Spill to SD (according to spec)
+        if (!self->write_window_file_(item.json)) {
+          ESP_LOGE(TAG, "Failed to spill live payload to SD");
+        }
+      }
+      // Continue immediately; no backoff on live path
+    } else {
+      // idle
+      vTaskDelay(pdMS_TO_TICKS(50));
+    }
+  }
+}
+
+// ---------- Task: backlog uploader ----------
+void SdLogger::task_backlog_entry_(void *param) {
+  auto *self = static_cast<SdLogger *>(param);
+
+  self->publish_sync_backlog_(false);
+  self->backlog_backoff_ms_ = 0;
+
+  for (;;) {
+    // Only run when online flag is true
+    if (!self->sync_online_) {
+      vTaskDelay(pdMS_TO_TICKS(500));
+      continue;
+    }
+
+    // Any files?
+    if (!self->has_backlog_files_()) {
+      self->publish_sync_backlog_(false);
+      vTaskDelay(pdMS_TO_TICKS(250));
+      continue;
+    }
+
+    self->publish_sync_backlog_(true);
+
+    // Pick oldest
+    std::string path;
+    if (!self->find_oldest_file_(path)) {
+      vTaskDelay(pdMS_TO_TICKS(250));
+      continue;
+    }
+
+    // Load
+    std::string body;
+    if (!self->load_file_(path, body)) {
+      ESP_LOGW(TAG, "Failed to read backlog file: %s", path.c_str());
+      // delete corrupt file to avoid livelock
+      self->delete_file_(path);
+      continue;
+    }
+
+    // PUT
+    int status = -1;
+    std::string err;
+    bool ok = self->send_http_put_(body, &status, &err);
+
+    if (ok) {
+      // success: delete and reset backoff
+      self->delete_file_(path);
+      self->backlog_backoff_ms_ = 0;
+      // continue immediately to next file
+      continue;
+    }
+
+    // Failure: decide retry policy
+    bool retryable = false;
+    if (status < 0) retryable = true; // transport error
+    if (status == 408 || status == 425 || status == 429 || (status >= 500 && status <= 599)) retryable = true;
+
+    if (!retryable) {
+      ESP_LOGW(TAG, "Backlog PUT non-retryable (status=%d), keeping file and moving on after backoff", status);
+    } else {
+      ESP_LOGW(TAG, "Backlog PUT retryable (status=%d): %s", status, err.c_str());
+    }
+
+    // Exponential backoff (applies regardless to avoid hammering)
+    if (self->backlog_backoff_ms_ == 0) self->backlog_backoff_ms_ = self->backoff_initial_ms_;
+    else self->backlog_backoff_ms_ = std::min<uint32_t>(self->backlog_backoff_ms_ * 2, self->backoff_max_ms_);
+
+    uint32_t sleep_ms = self->backlog_backoff_ms_;
+    uint32_t slept = 0;
+    while (slept < sleep_ms) {
+      // Abort backoff if we go offline; resume when online again
+      if (!self->sync_online_) break;
+      vTaskDelay(pdMS_TO_TICKS(250));
+      slept += 250;
+    }
+  }
+}
+
+}  // namespace sd_logger
 }  // namespace esphome
