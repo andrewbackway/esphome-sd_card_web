@@ -14,6 +14,8 @@ extern "C" {
 #include "esp_timer.h"
 }
 
+#include "esp_tls.h"
+
 namespace esphome {
 namespace sd_logger {
 
