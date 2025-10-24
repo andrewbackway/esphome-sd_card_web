@@ -273,12 +273,19 @@ bool SdLogger::send_http_put_(const std::string& body, int* http_status,
 
   ESP_LOGD(TAG, "send_http_put_()");
 
+  esp_tls_cfg_t tls_cfg = {};
+  tls_cfg.skip_common_name = true;
+  tls_cfg.auth_mode = ESP_TLS_VERIFY_NONE;
+  tls_cfg.min_tls_version = ESP_TLS_VERSION_TLS1_2;
+  tls_cfg.max_tls_version = ESP_TLS_VERSION_TLS1_3;
+
   esp_http_client_config_t cfg{};
   cfg.url = this->upload_url_.c_str();
   cfg.method = HTTP_METHOD_PUT;
   cfg.timeout_ms = 15000;
   cfg.transport_type = HTTP_TRANSPORT_OVER_SSL;  // works for http/https
   cfg.skip_cert_common_name_check = true;  // disable verification per spec
+  cfg.tls_cfg = &tls_cfg;  // Assign the custom TLS config
 
   esp_http_client_handle_t client = esp_http_client_init(&cfg);
   if (!client) {
@@ -320,12 +327,19 @@ bool SdLogger::send_http_ping_(int* http_status, std::string* resp_err) {
     return false;
   }
 
+  esp_tls_cfg_t tls_cfg = {};
+  tls_cfg.skip_common_name = true;
+  tls_cfg.auth_mode = ESP_TLS_VERIFY_NONE;
+  tls_cfg.min_tls_version = ESP_TLS_VERSION_TLS1_2;
+  tls_cfg.max_tls_version = ESP_TLS_VERSION_TLS1_3;
+
   esp_http_client_config_t cfg{};
   cfg.url = url.c_str();
   cfg.method = HTTP_METHOD_GET;  // GET is broadly allowed; HEAD often blocked
   cfg.timeout_ms = (int)this->ping_timeout_ms_;
   cfg.transport_type = HTTP_TRANSPORT_OVER_SSL;  // works for http/https
   cfg.skip_cert_common_name_check = true;        // per your spec+
+  cfg.tls_cfg = &tls_cfg;  // Assign the custom TLS config
   esp_http_client_handle_t client = esp_http_client_init(&cfg);
   if (!client) {
     if (resp_err) *resp_err = "http_client_init failed";
