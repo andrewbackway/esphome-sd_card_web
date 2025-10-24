@@ -6,6 +6,8 @@
 #include <unistd.h>
 
 #include <cmath>
+#include <list>
+#include <memory>  // for std::shared_ptr
 
 #include "esphome/core/helpers.h"
 #include "esphome/core/log.h"
@@ -173,4 +175,362 @@ static bool atomic_write_(const std::string& path, const std::string& data) {
   if (::rename(tmp.c_str(), path.c_str()) != 0) {
     ESP_LOGE(TAG, "atomic_write: rename(%s -> %s) failed (errno=%d: %s)",
              tmp.c_str(), path.c_str(), errno, strerror(errno));
-    ::
+    ::unlink(tmp.c_str());
+    return false;
+  }
+
+  return true;
+}
+
+// ===== internals =====
+bool SdLogger::time_valid_() const {
+  if (!this->time_) return false;
+  auto t = this->time_->now();
+  return t.is_valid();
+}
+
+void SdLogger::ensure_log_dir_() { (void)ensure_dir_(this->log_path_); }
+
+void SdLogger::publish_sync_online_(bool v) {
+  this->sync_online_ = v;
+  if (this->sync_online_bs_) this->sync_online_bs_->publish_state(v);
+}
+void SdLogger::publish_sync_backlog_(bool v) {
+  if (this->sync_sending_backlog_bs_)
+    this->sync_sending_backlog_bs_->publish_state(v);
+}
+
+bool SdLogger::build_payload_json_(std::string& out_json) {
+  // Timestamp
+  ESPTime t = this->time_->now();
+  char iso[32];
+  t.strftime(iso, sizeof(iso), "%Y-%m-%dT%H:%M:%SZ");
+
+  static std::string session_id;
+  if (session_id.empty()) session_id = uuid_v4_();
+  std::string id_guid = uuid_v4_();
+  std::string device_id = mac_as_device_id_();
+
+  out_json = json::build_json([&](JsonObject root) {
+    root["id"] = id_guid;
+    root["sessionId"] = session_id;
+    root["deviceId"] = device_id;
+    root["date"] = iso;
+
+    JsonArray arr = root["sensors"].to<JsonArray>();
+    for (auto* s : this->sensors_) {
+      JsonObject o = arr.add<JsonObject>();
+      // Prefer object_id if name empty
+      std::string sid = s->get_object_id();
+      if (sid.size() > 100)
+        sid.resize(100);  // guard, though spec applies to values
+      o["sensorId"] = sid.c_str();
+
+      if (!s->has_state() || std::isnan(s->state) || std::isinf(s->state)) {
+        o["value"] = nullptr;  // null per spec
+      } else {
+        // numeric (ESPHome sensors are floats)
+        o["value"] = s->state;
+      }
+    }
+  });
+
+  // Hard cap ~20KB
+  if (out_json.size() > 20 * 1024) {
+    // Try removing whitespace (compact)
+    std::string compact;
+    compact.reserve(out_json.size());
+    for (char c : out_json) {
+      if (c != '\n' && c != '\r' && c != '\t') compact.push_back(c);
+    }
+    out_json.swap(compact);
+  }
+  if (out_json.size() > 20 * 1024) {
+    ESP_LOGW(TAG, "payload > 20KB; dropping tick");
+    return false;
+  }
+  return true;
+}
+
+bool SdLogger::write_window_file_(const std::string& json) {
+  // Make sure directory exists (but DON'T recreate code — call the existing
+  // helper).
+  this->ensure_log_dir_();
+
+  uint32_t epoch = (uint32_t)this->time_->now().timestamp;
+  uint32_t win = window_start_(epoch);
+  std::string full = this->log_path_ + "/" + filename_for_(win);
+
+  if (!atomic_write_(full, json)) {
+    ESP_LOGE(TAG, "Failed to write %s (errno=%d)", full.c_str(), errno);
+    return false;
+  }
+  return true;
+}
+
+bool SdLogger::send_http_put_(const std::string& body, int* http_status, std::string* resp_err) {
+  if (http_status) *http_status = -1;
+  if (resp_err) resp_err->clear();
+
+  ESP_LOGD(TAG, "send_http_put_()");
+
+  if (this->http_request_ == nullptr) {
+    if (resp_err) *resp_err = "no http_request configured";
+    return false;
+  }
+
+  std::list<http_request::Header> headers;
+  headers.push_back({"Content-Type", "application/json"});
+  if (!this->bearer_token_.empty()) {
+    headers.push_back({"Authorization", this->bearer_token_});
+  }
+
+  this->http_request_->set_timeout(15);  // 15 seconds for PUT
+
+  auto container = this->http_request_->start(this->upload_url_, "PUT", body, headers);
+
+  if (!container) {
+    if (resp_err) *resp_err = "start failed";
+    return false;
+  }
+
+  int64_t start_time = esp_timer_get_time() / 1000;  // ms
+  uint32_t timeout_ms = 15000;
+
+  while (container->status_code == 0) {
+    this->http_request_->loop();
+
+    if ((esp_timer_get_time() / 1000 - start_time) > timeout_ms) {
+      if (resp_err) *resp_err = "timeout";
+      return false;
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
+
+  int code = container->status_code;
+  if (http_status) *http_status = code;
+  return (code == 200 || code == 201);
+}
+
+bool SdLogger::send_http_ping_(int* http_status, std::string* resp_err) {
+  ESP_LOGD(TAG, "send_http_ping_()");
+
+  if (http_status) *http_status = -1;
+  if (resp_err) resp_err->clear();
+
+  if (this->http_request_ == nullptr) {
+    if (resp_err) *resp_err = "no http_request configured";
+    return false;
+  }
+
+  // Pick ping URL; fall back to upload_url_ if not provided.
+  const std::string& url =
+      this->ping_url_.empty() ? this->upload_url_ : this->ping_url_;
+  if (url.empty()) {
+    if (resp_err) *resp_err = "no ping_url/upload_url configured";
+    return false;
+  }
+
+  std::list<http_request::Header> headers;
+  headers.push_back({"Accept", "*/*"});
+  if (!this->bearer_token_.empty()) {
+    headers.push_back({"Authorization", this->bearer_token_});
+  }
+  headers.push_back({"Connection", "close"});
+
+  this->http_request_->set_timeout(this->ping_timeout_ms_ / 1000);
+
+  auto container = this->http_request_->start(url, "GET", "", headers);
+
+  if (!container) {
+    if (resp_err) *resp_err = "start failed";
+    return false;
+  }
+
+  int64_t start_time = esp_timer_get_time() / 1000;  // ms
+
+  while (container->status_code == 0) {
+    this->http_request_->loop();
+
+    if ((esp_timer_get_time() / 1000 - start_time) > this->ping_timeout_ms_) {
+      if (resp_err) *resp_err = "timeout";
+      return false;
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
+
+  int code = container->status_code;
+  if (http_status) *http_status = code;
+  return (code >= 200 && code < 400);
+}
+
+bool SdLogger::has_backlog_files_() {
+  DIR* dir = opendir(this->log_path_.c_str());
+  if (!dir) return false;
+  struct dirent* e;
+  bool any = false;
+  while ((e = readdir(dir)) != nullptr) {
+    std::string name = e->d_name;
+    if (name.size() >= 5 && name.rfind(".json") == name.size() - 5) {
+      any = true;
+      break;
+    }
+  }
+  closedir(dir);
+  return any;
+}
+
+bool SdLogger::find_oldest_file_(std::string& path_out) {
+  DIR* dir = opendir(this->log_path_.c_str());
+  if (!dir) return false;
+  struct dirent* e;
+  std::string oldest;
+  time_t oldest_mtime = LONG_MAX;
+
+  while ((e = readdir(dir)) != nullptr) {
+    std::string name = e->d_name;
+    if (name.size() < 5 || name.rfind(".json") != name.size() - 5) continue;
+    std::string full = this->log_path_ + "/" + name;
+    struct stat st{};
+    if (stat(full.c_str(), &st) == 0) {
+      if (st.st_mtime < oldest_mtime) {
+        oldest_mtime = st.st_mtime;
+        oldest = full;
+      }
+    }
+  }
+  closedir(dir);
+  if (oldest.empty()) return false;
+  path_out = oldest;
+  return true;
+}
+
+bool SdLogger::load_file_(const std::string& path, std::string& data_out) {
+  int fd = ::open(path.c_str(), O_RDONLY);
+  if (fd < 0) return false;
+  std::string buf;
+  buf.resize(24 * 1024);
+  ssize_t n = ::read(fd, buf.data(), buf.size());
+  ::close(fd);
+  if (n < 0) return false;
+  buf.resize((size_t)n);
+  data_out.swap(buf);
+  return true;
+}
+
+bool SdLogger::delete_file_(const std::string& path) {
+  ESP_LOGD(TAG, "delete_file_: %s", path.c_str());
+  return ::unlink(path.c_str()) == 0;
+}
+
+// ===== Tasks =====
+void SdLogger::task_live_entry_(void* param) {
+  auto* self = static_cast<SdLogger*>(param);
+  LiveItem item;
+  for (;;) {
+    if (xQueueReceive(self->live_queue_, &item, pdMS_TO_TICKS(1000)) ==
+        pdPASS) {
+      int status = -1;
+      std::string err;
+      bool ok = self->send_http_put_(item.json, &status, &err);
+      if (ok)
+        self->publish_sync_online_(true);
+      else {
+        ESP_LOGW(TAG, "Live PUT failed (status=%d): %s", status, err.c_str());
+        self->publish_sync_online_(false);
+        if (!self->write_window_file_(item.json))
+          ESP_LOGE(TAG, "spill live->SD failed");
+      }
+    } else {
+      vTaskDelay(pdMS_TO_TICKS(50));
+    }
+  }
+}
+
+void SdLogger::task_backlog_entry_(void* param) {
+  auto* self = static_cast<SdLogger*>(param);
+  self->publish_sync_backlog_(false);
+  self->backlog_backoff_ms_ = 0;
+
+  for (;;) {
+    if (!self->sync_online_) {
+      int status = -1;
+      std::string err;
+      bool pong = self->send_http_ping_(&status, &err);
+      if (pong) {
+        self->publish_sync_online_(true);
+        // Clear any backlog backoff so we start promptly.
+        self->backlog_backoff_ms_ = 0;
+      } else {
+        self->publish_sync_online_(false);
+        // Sleep until next ping attempt.
+        vTaskDelay(pdMS_TO_TICKS(self->ping_interval_ms_));
+        continue;
+      }
+    }
+
+    if (!self->has_backlog_files_()) {
+      self->publish_sync_backlog_(false);
+      vTaskDelay(pdMS_TO_TICKS(250));
+      continue;
+    }
+    self->publish_sync_backlog_(true);
+
+    ESP_LOGI(TAG, "Backlog upload attempt");
+
+    std::string path;
+    if (!self->find_oldest_file_(path)) {
+      vTaskDelay(pdMS_TO_TICKS(250));
+      continue;
+    }
+
+    std::string body;
+    if (!self->load_file_(path, body)) {
+      ESP_LOGW(TAG, "read backlog failed: %s (deleting)", path.c_str());
+      self->delete_file_(path);
+      continue;
+    }
+
+    int status = -1;
+    std::string err;
+    bool ok = self->send_http_put_(body, &status, &err);
+
+    if (ok) {
+      self->delete_file_(path);
+      self->backlog_backoff_ms_ = 0;
+      continue;
+    }
+
+    bool retryable = false;
+    if (status < 0) retryable = true;
+    if (status == 408 || status == 425 || status == 429 ||
+        (status >= 500 && status <= 599))
+      retryable = true;
+
+    if (!retryable) {
+      ESP_LOGW(TAG, "Backlog PUT non-retryable status=%d; keeping file",
+               status);
+    } else {
+      ESP_LOGW(TAG, "Backlog PUT retryable status=%d: %s", status, err.c_str());
+    }
+
+    if (self->backlog_backoff_ms_ == 0)
+      self->backlog_backoff_ms_ = self->backoff_initial_ms_;
+    else
+      self->backlog_backoff_ms_ = std::min<uint32_t>(
+          self->backlog_backoff_ms_ * 2, self->backoff_max_ms_);
+
+    uint32_t wait = self->backlog_backoff_ms_;
+    uint32_t slept = 0;
+    while (slept < wait) {
+      if (!self->sync_online_) break;
+      vTaskDelay(pdMS_TO_TICKS(250));
+      slept += 250;
+    }
+  }
+}
+
+}  // namespace sd_logger
+}  // namespace esphome

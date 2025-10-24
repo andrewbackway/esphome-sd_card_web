@@ -6,7 +6,7 @@
 #include "esphome/components/sensor/sensor.h"
 #include "esphome/components/binary_sensor/binary_sensor.h"
 #include "esphome/components/json/json_util.h"
-#include "esphome/components/http_request/http_request.h"  // Added for HttpRequest
+#include "esphome/components/http_request/http_request.h"  // Added for HttpRequestComponent
 
 #include <vector>
 #include <string>
@@ -25,7 +25,7 @@ namespace sd_logger {
 class SdLogger : public Component {
  public:
   void set_time(time::RealTimeClock *t) { this->time_ = t; }
-  void set_http_request(http_request::HttpRequest *hr) { this->http_request_ = hr; }
+  void set_http_request(http_request::HttpRequestComponent *hr) { this->http_request_ = hr; }
   void set_upload_url(const std::string &u) { this->upload_url_ = u; }
   void set_bearer_token(const std::string &t) { this->bearer_token_ = t; }
   void set_log_path(const std::string &p) { this->log_path_ = p; }
@@ -66,7 +66,7 @@ class SdLogger : public Component {
   struct LiveItem { std::string json; };
 
   time::RealTimeClock *time_{nullptr};
-  http_request::HttpRequest *http_request_{nullptr};
+  http_request::HttpRequestComponent *http_request_{nullptr};
   std::vector<sensor::Sensor *> sensors_;
   binary_sensor::BinarySensor *sync_online_bs_{nullptr};
   binary_sensor::BinarySensor *sync_sending_backlog_bs_{nullptr};
