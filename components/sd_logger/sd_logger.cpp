@@ -279,7 +279,6 @@ bool SdLogger::send_http_put_(const std::string& body, int* http_status,
   cfg.timeout_ms = 15000;
   cfg.transport_type = HTTP_TRANSPORT_OVER_SSL;  // works for http/https
   cfg.skip_cert_common_name_check = true;  // disable verification per spec
-  cfg.disable_verify = true;  // Fully disable SSL peer verification
 
   esp_http_client_handle_t client = esp_http_client_init(&cfg);
   if (!client) {
@@ -327,7 +326,6 @@ bool SdLogger::send_http_ping_(int* http_status, std::string* resp_err) {
   cfg.timeout_ms = (int)this->ping_timeout_ms_;
   cfg.transport_type = HTTP_TRANSPORT_OVER_SSL;  // works for http/https
   cfg.skip_cert_common_name_check = true;        // per your spec+
-  cfg.disable_verify = true;  // Fully disable SSL peer verification
   esp_http_client_handle_t client = esp_http_client_init(&cfg);
   if (!client) {
     if (resp_err) *resp_err = "http_client_init failed";
