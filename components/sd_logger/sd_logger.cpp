@@ -300,9 +300,10 @@ bool SdLogger::http_request_(const char* url, esp_http_client_method_t method,
   cfg.disable_auto_redirect = false;  // keep redirects if server uses them
 
   if (strncmp(url, "https://", 8) == 0) {
-    cfg.skip_cert_common_name_check = true;  // still requires a trust anchor unless you also …
-    // … use this IDF 5.x field (discouraged):
-    //cfg.skip_tls_verify = true;
+    cfg.cert_pem = NULL;
+    cfg.crt_bundle_attach = NULL;
+    cfg.skip_cert_common_name_check = true;
+    cfg.transport_type = HTTP_TRANSPORT_OVER_SSL;
   }
 
   esp_http_client_handle_t client = esp_http_client_init(&cfg);
@@ -320,8 +321,7 @@ bool SdLogger::http_request_(const char* url, esp_http_client_method_t method,
   if (content_type && content_type[0])
     esp_http_client_set_header(client, "Content-Type", content_type);
   esp_http_client_set_header(client, "Accept", "*/*");
-  esp_http_client_set_header(client, "Connection",
-                             "close");  // avoid keeping sockets around
+  esp_http_client_set_header(client, "Connection", "close");  // avoid keeping sockets around
 
   if (!this->bearer_token_.empty())
     esp_http_client_set_header(client, "Authorization",
