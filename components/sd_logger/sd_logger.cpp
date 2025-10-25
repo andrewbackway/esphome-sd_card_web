@@ -300,9 +300,9 @@ bool SdLogger::http_request_(const char* url, esp_http_client_method_t method,
   cfg.disable_auto_redirect = false;  // keep redirects if server uses them
 
   if (strncmp(url, "https://", 8) == 0) {
-    //cfg.skip_cert_common_name_check = true;  // still requires a trust anchor unless you also …
+    cfg.skip_cert_common_name_check = true;  // still requires a trust anchor unless you also …
     // … use this IDF 5.x field (discouraged):
-    cfg.skip_tls_verify = true;
+    //cfg.skip_tls_verify = true;
   }
 
   esp_http_client_handle_t client = esp_http_client_init(&cfg);
