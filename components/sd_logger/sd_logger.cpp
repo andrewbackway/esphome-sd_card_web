@@ -13,8 +13,8 @@
 #include "esphome/core/log.h"
 
 extern "C" {
-#include "esp_timer.h"
 #include "esp_heap_caps.h"
+#include "esp_timer.h"
 }
 
 namespace esphome {
@@ -269,20 +269,20 @@ bool SdLogger::write_window_file_(const std::string& json) {
   return true;
 }
 
-static void set_err_(std::string *out, const char *msg) {
+static void set_err_(std::string* out, const char* msg) {
   if (!out) return;
-  if (!msg) { out->clear(); return; }
+  if (!msg) {
+    out->clear();
+    return;
+  }
   out->assign(msg, std::min<size_t>(out->max_size(), 160));  // cap
 }
 
 // ---- NEW: common HTTP request wrapper
-bool SdLogger::http_request_(const char *url,
-                             esp_http_client_method_t method,
-                             const char *content_type,
-                             const uint8_t *body, size_t body_len,
-                             uint32_t timeout_ms,
-                             int *http_status,
-                             std::string *resp_err) {
+bool SdLogger::http_request_(const char* url, esp_http_client_method_t method,
+                             const char* content_type, const uint8_t* body,
+                             size_t body_len, uint32_t timeout_ms,
+                             int* http_status, std::string* resp_err) {
   if (http_status) *http_status = -1;
   set_err_(resp_err, nullptr);
 
@@ -296,14 +296,23 @@ bool SdLogger::http_request_(const char *url,
   esp_http_client_config_t cfg = {};
   cfg.url = url;
   cfg.method = method;
-  cfg.timeout_ms = (int) timeout_ms;
+  cfg.timeout_ms = (int)timeout_ms;
   cfg.disable_auto_redirect = false;  // keep redirects if server uses them
 
+  if (strncmp(url, "https://", 8) == 0) {
+    //cfg.skip_cert_common_name_check = true;  // still requires a trust anchor unless you also …
+    // … use this IDF 5.x field (discouraged):
+    cfg.skip_tls_verify = true;
+  }
+
   esp_http_client_handle_t client = esp_http_client_init(&cfg);
-  if (!client) { set_err_(resp_err, "init failed"); return false; }
+  if (!client) {
+    set_err_(resp_err, "init failed");
+    return false;
+  }
 
   // Always close and cleanup on exit
-  auto cleanup = [&](){
+  auto cleanup = [&]() {
     if (client) esp_http_client_cleanup(client);
   };
 
@@ -311,10 +320,12 @@ bool SdLogger::http_request_(const char *url,
   if (content_type && content_type[0])
     esp_http_client_set_header(client, "Content-Type", content_type);
   esp_http_client_set_header(client, "Accept", "*/*");
-  esp_http_client_set_header(client, "Connection", "close"); // avoid keeping sockets around
+  esp_http_client_set_header(client, "Connection",
+                             "close");  // avoid keeping sockets around
 
   if (!this->bearer_token_.empty())
-    esp_http_client_set_header(client, "Authorization", this->bearer_token_.c_str());
+    esp_http_client_set_header(client, "Authorization",
+                               this->bearer_token_.c_str());
 
   if (body && body_len > 0) {
     esp_http_client_set_post_field(client, (const char*)body, (int)body_len);
@@ -332,8 +343,9 @@ bool SdLogger::http_request_(const char *url,
     // Read (up to small cap) to drain body; avoid big allocs
     char small_buf[128];
     int r;
-    while ((r = esp_http_client_read(client, small_buf, sizeof(small_buf))) > 0) {
-      bytes_read += (size_t) r;
+    while ((r = esp_http_client_read(client, small_buf, sizeof(small_buf))) >
+           0) {
+      bytes_read += (size_t)r;
       // discard
     }
   } else {
@@ -343,30 +355,35 @@ bool SdLogger::http_request_(const char *url,
   uint32_t dt = (uint32_t)(esp_timer_get_time() / 1000ULL) - t0;
 
   // Debug memory + timing
-  ESP_LOGD(TAG, "http_request: %s %s => err=%s code=%d, read=%uB, %ums, heap=%u",
-           (method==HTTP_METHOD_PUT?"PUT":method==HTTP_METHOD_GET?"GET":"HEAD"),
-           url,
-           (err==ESP_OK?"OK":esp_err_to_name(err)),
-           code, (unsigned)bytes_read, (unsigned)dt,
-           (unsigned)esp_get_free_heap_size());
+  ESP_LOGD(
+      TAG, "http_request: %s %s => err=%s code=%d, read=%uB, %ums, heap=%u",
+      (method == HTTP_METHOD_PUT   ? "PUT"
+       : method == HTTP_METHOD_GET ? "GET"
+                                   : "HEAD"),
+      url, (err == ESP_OK ? "OK" : esp_err_to_name(err)), code,
+      (unsigned)bytes_read, (unsigned)dt, (unsigned)esp_get_free_heap_size());
 
   cleanup();
 
-  // Treat 200/201/204 as success for PUT; 2xx/3xx success for ping handled by callers.
+  // Treat 200/201/204 as success for PUT; 2xx/3xx success for ping handled by
+  // callers.
   if (method == HTTP_METHOD_PUT)
     return (err == ESP_OK) && (code == 200 || code == 201 || code == 204);
   return (err == ESP_OK);
 }
 
 // ---- NEW: ping wrapper (uses HEAD, falls back to GET if needed)
-bool SdLogger::http_ping_(const char *url, uint32_t timeout_ms, int *http_status, std::string *resp_err) {
+bool SdLogger::http_ping_(const char* url, uint32_t timeout_ms,
+                          int* http_status, std::string* resp_err) {
   // Prefer HEAD to minimise payload
-  if (this->http_request_(url, HTTP_METHOD_HEAD, nullptr, nullptr, 0, timeout_ms, http_status, resp_err)) {
+  if (this->http_request_(url, HTTP_METHOD_HEAD, nullptr, nullptr, 0,
+                          timeout_ms, http_status, resp_err)) {
     int code = http_status ? *http_status : 0;
     return code >= 200 && code < 400;
   }
   // Some servers don’t allow HEAD; try GET (no body set)
-  if (this->http_request_(url, HTTP_METHOD_GET, nullptr, nullptr, 0, timeout_ms, http_status, resp_err)) {
+  if (this->http_request_(url, HTTP_METHOD_GET, nullptr, nullptr, 0, timeout_ms,
+                          http_status, resp_err)) {
     int code = http_status ? *http_status : 0;
     return code >= 200 && code < 400;
   }
@@ -374,22 +391,26 @@ bool SdLogger::http_ping_(const char *url, uint32_t timeout_ms, int *http_status
 }
 
 // ---- REPLACE: send_http_put_ to use esp_http_client
-bool SdLogger::send_http_put_(const std::string &body, int *http_status, std::string *resp_err) {
-  const char *url = this->upload_url_.c_str();
+bool SdLogger::send_http_put_(const std::string& body, int* http_status,
+                              std::string* resp_err) {
+  const char* url = this->upload_url_.c_str();
   return this->http_request_(url, HTTP_METHOD_PUT, "application/json",
-                             reinterpret_cast<const uint8_t*>(body.data()), body.size(),
+                             reinterpret_cast<const uint8_t*>(body.data()),
+                             body.size(),
                              /*timeout_ms=*/15000, http_status, resp_err);
 }
 
 // ---- REPLACE: send_http_ping_ to use esp_http_client
-bool SdLogger::send_http_ping_(int *http_status, std::string *resp_err) {
-  const std::string &url = this->ping_url_.empty() ? this->upload_url_ : this->ping_url_;
+bool SdLogger::send_http_ping_(int* http_status, std::string* resp_err) {
+  const std::string& url =
+      this->ping_url_.empty() ? this->upload_url_ : this->ping_url_;
   if (url.empty()) {
     set_err_(resp_err, "no ping_url/upload_url configured");
     if (http_status) *http_status = -1;
     return false;
   }
-  return this->http_ping_(url.c_str(), this->ping_timeout_ms_, http_status, resp_err);
+  return this->http_ping_(url.c_str(), this->ping_timeout_ms_, http_status,
+                          resp_err);
 }
 
 bool SdLogger::has_backlog_files_() {
