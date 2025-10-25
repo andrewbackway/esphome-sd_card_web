@@ -339,7 +339,7 @@ bool SdLogger::send_http_ping_(int* http_status, std::string* resp_err) {
   }
   headers.push_back({"Connection", "close"});
 
-  this->http_request_->set_timeout(this->ping_timeout_ms_ / 1000);
+  this->http_request_->set_timeout(this->ping_timeout_ms_);
 
   auto container = this->http_request_->start(url, "GET", "", headers);
 
