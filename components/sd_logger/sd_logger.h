@@ -6,7 +6,6 @@
 #include "esphome/components/sensor/sensor.h"
 #include "esphome/components/binary_sensor/binary_sensor.h"
 #include "esphome/components/json/json_util.h"
-#include "esphome/components/http_request/http_request.h"  // Added for HttpRequestComponent
 
 #include <vector>
 #include <string>
@@ -17,6 +16,11 @@ extern "C" {
   #include "freertos/queue.h"
 
   #include "esp_system.h"      // esp_read_mac, ESP_MAC_WIFI_STA
+}
+
+extern "C" {
+  #include "esp_http_client.h"
+  #include "esp_tls.h"
 }
 
 namespace esphome {
@@ -62,6 +66,17 @@ class SdLogger : public Component {
   bool find_oldest_file_(std::string &path_out);
   bool load_file_(const std::string &path, std::string &data_out);
   bool delete_file_(const std::string &path);
+
+  bool http_request_(
+      const char *url,
+      esp_http_client_method_t method,
+      const char *content_type,
+      const uint8_t *body, size_t body_len,
+      uint32_t timeout_ms,
+      int *http_status,
+      std::string *resp_err);
+
+  bool http_ping_(const char *url, uint32_t timeout_ms, int *http_status, std::string *resp_err);
 
   struct LiveItem { std::string json; };
 

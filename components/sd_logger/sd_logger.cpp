@@ -14,6 +14,7 @@
 
 extern "C" {
 #include "esp_timer.h"
+#include "esp_heap_caps.h"
 }
 
 namespace esphome {
@@ -268,102 +269,128 @@ bool SdLogger::write_window_file_(const std::string& json) {
   return true;
 }
 
-bool SdLogger::send_http_put_(const std::string& body, int* http_status, std::string* resp_err) {
-  if (http_status) *http_status = -1;
-  if (resp_err) resp_err->clear();
-
-  ESP_LOGD(TAG, "send_http_put_()");
-
-  if (this->http_request_ == nullptr) {
-    if (resp_err) *resp_err = "no http_request configured";
-    return false;
-  }
-
-  std::list<http_request::Header> headers;
-  headers.push_back({"Content-Type", "application/json"});
-  if (!this->bearer_token_.empty()) {
-    headers.push_back({"Authorization", this->bearer_token_});
-  }
-
-  this->http_request_->set_timeout(15);  // 15 seconds for PUT
-
-  auto container = this->http_request_->start(this->upload_url_, "PUT", body, headers);
-
-  if (!container) {
-    if (resp_err) *resp_err = "start failed";
-    return false;
-  }
-
-  int64_t start_time = esp_timer_get_time() / 1000;  // ms
-  uint32_t timeout_ms = 15000;
-
-  while (container->status_code == 0) {
-    this->http_request_->loop();
-
-    if ((esp_timer_get_time() / 1000 - start_time) > timeout_ms) {
-      if (resp_err) *resp_err = "timeout";
-      return false;
-    }
-
-    vTaskDelay(pdMS_TO_TICKS(10));
-  }
-
-  int code = container->status_code;
-  if (http_status) *http_status = code;
-  return (code == 200 || code == 201);
+static void set_err_(std::string *out, const char *msg) {
+  if (!out) return;
+  if (!msg) { out->clear(); return; }
+  out->assign(msg, std::min<size_t>(out->max_size(), 160));  // cap
 }
 
-bool SdLogger::send_http_ping_(int* http_status, std::string* resp_err) {
-  ESP_LOGD(TAG, "send_http_ping_()");
-
+// ---- NEW: common HTTP request wrapper
+bool SdLogger::http_request_(const char *url,
+                             esp_http_client_method_t method,
+                             const char *content_type,
+                             const uint8_t *body, size_t body_len,
+                             uint32_t timeout_ms,
+                             int *http_status,
+                             std::string *resp_err) {
   if (http_status) *http_status = -1;
-  if (resp_err) resp_err->clear();
+  set_err_(resp_err, nullptr);
 
-  if (this->http_request_ == nullptr) {
-    if (resp_err) *resp_err = "no http_request configured";
+  if (!url || !url[0]) {
+    set_err_(resp_err, "no url");
     return false;
   }
 
-  // Pick ping URL; fall back to upload_url_ if not provided.
-  const std::string& url =
-      this->ping_url_.empty() ? this->upload_url_ : this->ping_url_;
-  if (url.empty()) {
-    if (resp_err) *resp_err = "no ping_url/upload_url configured";
-    return false;
+  // NOTE: TLS: If you use HTTPS and don't configure a CA bundle,
+  // esp_http_client may fail certificate verification. See questions below.
+  esp_http_client_config_t cfg = {};
+  cfg.url = url;
+  cfg.method = method;
+  cfg.timeout_ms = (int) timeout_ms;
+  cfg.disable_auto_redirect = false;  // keep redirects if server uses them
+
+  esp_http_client_handle_t client = esp_http_client_init(&cfg);
+  if (!client) { set_err_(resp_err, "init failed"); return false; }
+
+  // Always close and cleanup on exit
+  auto cleanup = [&](){
+    if (client) esp_http_client_cleanup(client);
+  };
+
+  // Minimal headers
+  if (content_type && content_type[0])
+    esp_http_client_set_header(client, "Content-Type", content_type);
+  esp_http_client_set_header(client, "Accept", "*/*");
+  esp_http_client_set_header(client, "Connection", "close"); // avoid keeping sockets around
+
+  if (!this->bearer_token_.empty())
+    esp_http_client_set_header(client, "Authorization", this->bearer_token_.c_str());
+
+  if (body && body_len > 0) {
+    esp_http_client_set_header(client, "Content-Length", StringPrintf("%u", (unsigned)body_len).c_str());
+    esp_http_client_set_post_field(client, (const char*)body, (int)body_len);
   }
 
-  std::list<http_request::Header> headers;
-  headers.push_back({"Accept", "*/*"});
-  if (!this->bearer_token_.empty()) {
-    headers.push_back({"Authorization", this->bearer_token_});
-  }
-  headers.push_back({"Connection", "close"});
+  uint32_t t0 = (uint32_t)(esp_timer_get_time() / 1000ULL);
+  size_t bytes_read = 0;
 
-  this->http_request_->set_timeout(this->ping_timeout_ms_);
+  esp_err_t err = esp_http_client_perform(client);
 
-  auto container = this->http_request_->start(url, "GET", "", headers);
-
-  if (!container) {
-    if (resp_err) *resp_err = "start failed";
-    return false;
-  }
-
-  int64_t start_time = esp_timer_get_time() / 1000;  // ms
-
-  while (container->status_code == 0) {
-    this->http_request_->loop();
-
-    if ((esp_timer_get_time() / 1000 - start_time) > this->ping_timeout_ms_) {
-      if (resp_err) *resp_err = "timeout";
-      return false;
-    }
-
-    vTaskDelay(pdMS_TO_TICKS(10));
-  }
-
-  int code = container->status_code;
+  int code = esp_http_client_get_status_code(client);
   if (http_status) *http_status = code;
-  return (code >= 200 && code < 400);
+
+  if (err == ESP_OK) {
+    // Read (up to small cap) to drain body; avoid big allocs
+    char small_buf[128];
+    int r;
+    while ((r = esp_http_client_read(client, small_buf, sizeof(small_buf))) > 0) {
+      bytes_read += (size_t) r;
+      // discard
+    }
+  } else {
+    set_err_(resp_err, esp_err_to_name(err));
+  }
+
+  uint32_t dt = (uint32_t)(esp_timer_get_time() / 1000ULL) - t0;
+
+  // Debug memory + timing
+  ESP_LOGD(TAG, "http_request: %s %s => err=%s code=%d, read=%uB, %ums, heap=%u",
+           (method==HTTP_METHOD_PUT?"PUT":method==HTTP_METHOD_GET?"GET":"HEAD"),
+           url,
+           (err==ESP_OK?"OK":esp_err_to_name(err)),
+           code, (unsigned)bytes_read, (unsigned)dt,
+           (unsigned)esp_get_free_heap_size());
+
+  cleanup();
+
+  // Treat 200/201/204 as success for PUT; 2xx/3xx success for ping handled by callers.
+  if (method == HTTP_METHOD_PUT)
+    return (err == ESP_OK) && (code == 200 || code == 201 || code == 204);
+  return (err == ESP_OK);
+}
+
+// ---- NEW: ping wrapper (uses HEAD, falls back to GET if needed)
+bool SdLogger::http_ping_(const char *url, uint32_t timeout_ms, int *http_status, std::string *resp_err) {
+  // Prefer HEAD to minimise payload
+  if (this->http_request_(url, HTTP_METHOD_HEAD, nullptr, nullptr, 0, timeout_ms, http_status, resp_err)) {
+    int code = http_status ? *http_status : 0;
+    return code >= 200 && code < 400;
+  }
+  // Some servers don’t allow HEAD; try GET (no body set)
+  if (this->http_request_(url, HTTP_METHOD_GET, nullptr, nullptr, 0, timeout_ms, http_status, resp_err)) {
+    int code = http_status ? *http_status : 0;
+    return code >= 200 && code < 400;
+  }
+  return false;
+}
+
+// ---- REPLACE: send_http_put_ to use esp_http_client
+bool SdLogger::send_http_put_(const std::string &body, int *http_status, std::string *resp_err) {
+  const char *url = this->upload_url_.c_str();
+  return this->http_request_(url, HTTP_METHOD_PUT, "application/json",
+                             reinterpret_cast<const uint8_t*>(body.data()), body.size(),
+                             /*timeout_ms=*/15000, http_status, resp_err);
+}
+
+// ---- REPLACE: send_http_ping_ to use esp_http_client
+bool SdLogger::send_http_ping_(int *http_status, std::string *resp_err) {
+  const std::string &url = this->ping_url_.empty() ? this->upload_url_ : this->ping_url_;
+  if (url.empty()) {
+    set_err_(resp_err, "no ping_url/upload_url configured");
+    if (http_status) *http_status = -1;
+    return false;
+  }
+  return this->http_ping_(url.c_str(), this->ping_timeout_ms_, http_status, resp_err);
 }
 
 bool SdLogger::has_backlog_files_() {

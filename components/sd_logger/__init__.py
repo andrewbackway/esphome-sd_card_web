@@ -7,7 +7,7 @@ from esphome.const import (
     CONF_ID
 )
 
-AUTO_LOAD = ["sensor", "binary_sensor", "time", "json", "http_request"]
+AUTO_LOAD = ["sensor", "binary_sensor", "time", "json"]
 sd_logger_ns = cg.esphome_ns.namespace("sd_logger")
 SdLogger = sd_logger_ns.class_("SdLogger", cg.Component)
 
@@ -25,14 +25,11 @@ CONF_PING_TIMEOUT = "ping_timeout"
 CONF_SYNC_ONLINE = "sync_online"
 CONF_SYNC_SENDING_BACKLOG = "sync_sending_backlog"
 
-CONF_HTTP_REQUEST = "http_request"
-
 CONFIG_SCHEMA = cv.Schema(
     {
         cv.GenerateID(): cv.declare_id(SdLogger),
 
         cv.Required("time_id"): cv.use_id(time_comp.RealTimeClock),
-        cv.Required(CONF_HTTP_REQUEST): cv.use_id("http_request::HttpRequest"),
         cv.Required(CONF_UPLOAD_URL): cv.string,
         cv.Optional(CONF_BEARER_TOKEN, default=""): cv.string,
         cv.Required(CONF_LOG_PATH): cv.string,
@@ -63,10 +60,6 @@ async def to_code(config):
     # Time reference
     time_var = await cg.get_variable(config["time_id"])
     cg.add(var.set_time(time_var))
-
-    # HTTP request
-    hr = await cg.get_variable(config[CONF_HTTP_REQUEST])
-    cg.add(var.set_http_request(hr))
 
     # Config values
     cg.add(var.set_upload_url(config[CONF_UPLOAD_URL]))
