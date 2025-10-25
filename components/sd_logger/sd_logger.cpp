@@ -317,7 +317,6 @@ bool SdLogger::http_request_(const char *url,
     esp_http_client_set_header(client, "Authorization", this->bearer_token_.c_str());
 
   if (body && body_len > 0) {
-    esp_http_client_set_header(client, "Content-Length", StringPrintf("%u", (unsigned)body_len).c_str());
     esp_http_client_set_post_field(client, (const char*)body, (int)body_len);
   }
 
