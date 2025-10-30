@@ -6,7 +6,7 @@ from esphome.const import (
 )
 from . import SdMmc, CONF_SD_MMC_CARD_ID
 
-DEPENDENCIES = ["sd_mmc_card"]
+DEPENDENCIES = ["sd_mmc"]
 
 CONF_SD_CARD_TYPE = "sd_card_type"
 

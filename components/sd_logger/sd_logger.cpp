@@ -66,7 +66,7 @@ void SdLogger::loop() {
   this->last_tick_window_ = win;
 
   std::string payload;
-  if (!this->build_payload_json_(payload)) {
+  if (!this->build_payload_json_(payload)) { // should be in its own task
     ESP_LOGW(TAG, "build_payload_json failed; skip tick");
     return;
   }
@@ -200,58 +200,112 @@ void SdLogger::publish_sync_backlog_(bool v) {
   if (this->sync_sending_backlog_bs_)
     this->sync_sending_backlog_bs_->publish_state(v);
 }
+// ---- fast helpers from earlier (keep these if you need them elsewhere) ----
+// If you never need to escape/quote here, you can drop the escapers.
 
-bool SdLogger::build_payload_json_(std::string& out_json) {
-  // Timestamp
+// Append a raw JSON value (must already be valid JSON)
+static inline void append_raw_json_value(std::string &dst, const std::string &frag) {
+  if (frag.empty()) {
+    dst += "null";
+    return;
+  }
+  // (Optional ultra-light sanity: check plausible first byte)
+  const char c = frag.front();
+  if (!(c == '{' || c == '[' || c == '"' || c == 'n' || c == 't' || c == 'f' ||
+        c == '-' || (c >= '0' && c <= '9'))) {
+    // Fallback if someone passed a non-JSON fragment
+    dst += "null";
+    return;
+  }
+  dst.append(frag);
+}
+
+// ---- Your hook: always provide a JSON fragment for the sensor value ----
+// Default implementation (example). Replace/extend with your own logic.
+// For float sensors, emit compact number or null.
+// For text sensors, emit a quoted+escaped string.
+// For composites, return a prebuilt {"lat":...,"lon":...}, etc.
+std::string SdLogger::get_value_json_fragment_(const esphome::sensor::Sensor *s) const {
+  // Example for numeric sensors
+  if (s && s->has_state() && !std::isnan(s->state) && !std::isinf(s->state)) {
+    char buf[32];
+    int n = snprintf(buf, sizeof(buf), "%.9g", static_cast<double>(s->state));
+    if (n > 0) return std::string(buf, static_cast<size_t>(n));
+  }
+  return "null";
+}
+
+// Overload for text sensors if you have them (optional):
+// std::string SdLogger::get_value_json_fragment_(const esphome::text_sensor::TextSensor *ts) const {
+//   if (ts && ts->has_state()) {
+//     std::string out; out.reserve(ts->state.size() + 2);
+//     // quote+escape; if you already store a pre-quoted fragment, just return it.
+//     out.push_back('"');
+//     json_escape_append(out, ts->state.data(), ts->state.size());
+//     out.push_back('"');
+//     return out;
+//   }
+//   return "null";
+// }
+
+// ---- Builder: always uses raw fragments for "value" ----
+bool SdLogger::build_payload_json_(std::string &out_json) {
+  // Timestamp -> ISO 8601 Z
   ESPTime t = this->time_->now();
   char iso[32];
   t.strftime(iso, sizeof(iso), "%Y-%m-%dT%H:%M:%SZ");
 
   static std::string session_id;
   if (session_id.empty()) session_id = uuid_v4_();
-  std::string id_guid = uuid_v4_();
-  std::string device_id = mac_as_device_id_();
+  const std::string id_guid = uuid_v4_();
+  const std::string device_id = mac_as_device_id_();
 
-  out_json = json::build_json([&](JsonObject root) {
-    root["id"] = id_guid;
-    root["sessionId"] = session_id;
-    root["deviceId"] = device_id;
-    root["date"] = iso;
+  out_json.clear();
+  out_json.reserve(128 + this->sensors_.size() * 64);
 
-    JsonArray arr = root["sensors"].to<JsonArray>();
-    for (auto* s : this->sensors_) {
-      JsonObject o = arr.add<JsonObject>();
-      // Prefer object_id if name empty
-      std::string sid = s->get_object_id();
-      if (sid.size() > 100)
-        sid.resize(100);  // guard, though spec applies to values
-      o["sensorId"] = sid.c_str();
+  out_json.push_back('{');
 
-      if (!s->has_state() || std::isnan(s->state) || std::isinf(s->state)) {
-        o["value"] = nullptr;  // null per spec
-      } else {
-        // numeric (ESPHome sensors are floats)
-        o["value"] = s->state;
-      }
-    }
-  });
+  out_json += "\"id\":\"";   out_json += id_guid;    out_json += "\",";
+  out_json += "\"sessionId\":\""; out_json += session_id; out_json += "\",";
+  out_json += "\"deviceId\":\"";  out_json += device_id;  out_json += "\",";
+  out_json += "\"date\":\""; out_json += iso; out_json += "\",";
 
-  // Hard cap ~20KB
-  if (out_json.size() > 20 * 1024) {
-    // Try removing whitespace (compact)
-    std::string compact;
-    compact.reserve(out_json.size());
-    for (char c : out_json) {
-      if (c != '\n' && c != '\r' && c != '\t') compact.push_back(c);
-    }
-    out_json.swap(compact);
+  out_json += "\"sensors\":[";
+  bool first = true;
+
+  for (auto *s : this->sensors_) {
+    std::string sid = s->get_object_id();
+    if (sid.size() > 100) sid.resize(100);
+
+    if (!first) out_json.push_back(',');
+    first = false;
+
+    out_json.push_back('{');
+
+    out_json += "\"sensorId\":\"";
+    // If you expect arbitrary ids, escape here; if ids are safe ASCII, this is fine.
+    // json_escape_append(out_json, sid.data(), sid.size());
+    out_json += sid;
+    out_json += "\",";
+
+    out_json += "\"value\":";
+    // Always use raw fragment provider
+    append_raw_json_value(out_json, this->get_value_json_fragment_(s));
+
+    out_json.push_back('}');
   }
+
+  out_json.push_back(']');
+  out_json.push_back('}');
+
+  // Size cap
   if (out_json.size() > 20 * 1024) {
     ESP_LOGW(TAG, "payload > 20KB; dropping tick");
     return false;
   }
   return true;
 }
+
 
 bool SdLogger::write_window_file_(const std::string& json) {
   // Make sure directory exists (but DON'T recreate code — call the existing
