@@ -53,6 +53,7 @@ class SdLogger : public Component {
   bool time_valid_() const;
   void ensure_log_dir_();
   bool build_payload_json_(std::string &out_json);
+  std::string get_value_json_fragment_(const esphome::sensor::Sensor *s) const;
   bool write_window_file_(const std::string &json);
   bool send_http_put_(const std::string &body, int *http_status, std::string *resp_err);
   void publish_sync_online_(bool v);
