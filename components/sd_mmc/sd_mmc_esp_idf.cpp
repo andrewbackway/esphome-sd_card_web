@@ -20,6 +20,7 @@ static const std::string MOUNT_POINT("/sdcard");
 std::string build_path(const char *path) { return MOUNT_POINT + path; }
 
 void SdMmc::setup() {
+  ESP_LOGI(TAG, "Setting up SD MMC...");
   if (this->power_ctrl_pin_ != nullptr)
     this->power_ctrl_pin_->setup();
 
@@ -70,6 +71,8 @@ void SdMmc::setup() {
 #endif
 
   update_sensors();
+
+  ESP_LOGI(TAG, "SD MMC mounted successfully");
 }
 
 void SdMmc::write_file(const char *path, const uint8_t *buffer, size_t len, const char *mode) {

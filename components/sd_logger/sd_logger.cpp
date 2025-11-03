@@ -31,7 +31,7 @@ static bool atomic_write_(const std::string& path, const std::string& data);
 void SdLogger::setup() {
   ESP_LOGI(TAG, "setup()");
   if (this->log_path_.empty()) this->log_path_ = "/sdcard/logs";
-  this->ensure_log_dir_();
+  //this->ensure_log_dir_();
 
   this->live_queue_ = xQueueCreate(16, sizeof(LiveItem));
   if (!this->live_queue_) ESP_LOGE(TAG, "create live queue failed");
