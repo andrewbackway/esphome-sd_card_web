@@ -28,7 +28,7 @@ CONFIG_SCHEMA = cv.All(
             cv.GenerateID(CONF_WEB_SERVER_BASE_ID): cv.use_id(
                 web_server_base.WebServerBase
             ),
-            cv.GenerateID(sd_mmc.CONF_SD_MMC_CARD_ID): cv.use_id(sd_mmc.SdMmc),
+            cv.GenerateID(sd_mmc.CONF_SD_MMC_ID): cv.use_id(sd_mmc.SdMmc),
             cv.Optional(CONF_URL_PREFIX, default="file"): cv.string_strict,
             cv.Optional(CONF_ROOT_PATH, default="/"): cv.string_strict,
             cv.Optional(CONF_ENABLE_DELETION, default=False): cv.boolean,
@@ -44,7 +44,7 @@ async def to_code(config):
     
     var = cg.new_Pvariable(config[CONF_ID], paren)
     await cg.register_component(var, config)
-    sdmmc = await cg.get_variable(config[sd_mmc.CONF_SD_MMC_CARD_ID])
+    sdmmc = await cg.get_variable(config[sd_mmc.CONF_SD_MMC_ID])
     cg.add(var.set_sd_mmc(sdmmc))
     cg.add(var.set_url_prefix(config[CONF_URL_PREFIX]))
     cg.add(var.set_root_path(config[CONF_ROOT_PATH]))
