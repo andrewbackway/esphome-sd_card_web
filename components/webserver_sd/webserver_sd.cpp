@@ -42,9 +42,6 @@ void SDFileServer::handleRequest(AsyncWebServerRequest* request) {
   auto method = request->method();
   std::string url = request->url().c_str();
 
-  ESP_LOGD(TAG, "Handling request: %s %s", request->methodToString(),
-           url.c_str());
-
   if (method == HTTP_GET) {
     // workaround for delete Detect ?delete (or &delete, delete=1, etc.)
     if (request->hasParam("delete")) {
