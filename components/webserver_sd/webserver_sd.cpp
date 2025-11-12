@@ -33,10 +33,32 @@ void SDFileServer::handleRequest(AsyncWebServerRequest *request) {
       this->handle_get(request);
       return;
     }
-    if (request->method() == HTTP_DELETE) {
-      this->handle_delete(request);
-      return;
+    // is blocked by upstream calls, use HTTP post with ?delete instead
+    // if (request->method() == HTTP_DELETE) {
+    //  this->handle_delete(request);
+    //  return;
+    //}
+
+    if (method == HTTP_POST) {
+      
+    // Detect ?delete (or &delete, delete=1, etc.)
+    auto qpos = url.find('?');
+    if (qpos != std::string::npos) {
+      std::string query = url.substr(qpos + 1);
+
+      bool is_delete = (query == "delete") ||
+                       (query.rfind("delete=", 0) == 0) ||         // delete=...
+                       (query.find("&delete") != std::string::npos);
+
+      if (is_delete) {
+        this->handle_delete(request);
+        return;
+      }
     }
+
+    // otherwise normal POST handling (uploads via handleUpload)
+    return;
+  }
   }
 }
 
