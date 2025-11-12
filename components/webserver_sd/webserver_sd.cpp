@@ -177,10 +177,16 @@ void SDFileServer::handle_index(AsyncWebServerRequest* request,
   AsyncResponseStream* response =
       request->beginResponseStream("application/json");
 
+  // Build breadcrumbs array
+  std::string current_path = "/";
+  std::string relative_path = Path::join(
+      this->url_prefix_, Path::remove_root_path(path, this->root_path_));
+  std::vector<std::string> parts = Path::split_path(relative_path);
+
   std::string json = "{\n";
 
   // Add current path
-  json += "  \"current_path\": \"" + escape_json(path) + "\",\n";
+  json += "  \"current_path\": \"" + escape_json(relative_path) + "\",\n";
 
   // Add enabled flags (for client-side handling)
   json += "  \"upload_enabled\": " +
@@ -195,11 +201,7 @@ void SDFileServer::handle_index(AsyncWebServerRequest* request,
       (this->deletion_enabled_ ? std::string("true") : std::string("false")) +
       ",\n";
 
-  // Build breadcrumbs array
-  std::string current_path = "/";
-  std::string relative_path = Path::join(
-      this->url_prefix_, Path::remove_root_path(path, this->root_path_));
-  std::vector<std::string> parts = Path::split_path(relative_path);
+  
 
   json += "  \"breadcrumbs\": [\n";
   bool first_breadcrumb = true;
