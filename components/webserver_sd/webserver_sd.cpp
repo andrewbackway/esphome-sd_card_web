@@ -46,19 +46,10 @@ void SDFileServer::handleRequest(AsyncWebServerRequest* request) {
            url.c_str());
 
   if (method == HTTP_GET) {
-    // workaround for delte Detect ?delete (or &delete, delete=1, etc.)
-    auto qpos = url.find('?');
-    if (qpos != std::string::npos) {
-      std::string query = url.substr(qpos + 1);
-
-      bool is_delete = (query == "delete") ||
-                       (query.rfind("delete=", 0) == 0) ||  // delete=...
-                       (query.find("&delete") != std::string::npos);
-
-      if (is_delete) {
-        this->handle_delete(request);
-        return;
-      }
+    // workaround for delete Detect ?delete (or &delete, delete=1, etc.)
+    if (request->hasParam("delete")) {
+      this->handle_delete(request);
+      return;
     }
 
     this->handle_get(request);
