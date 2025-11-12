@@ -185,5 +185,5 @@ std::string memory_unit_to_string(MemoryUnits);
 MemoryUnits memory_unit_from_size(size_t);
 std::string format_size(size_t);
 
-}  // namespace sd_mmc_card
+}  // namespace sd_mmc
 }  // namespace esphome
