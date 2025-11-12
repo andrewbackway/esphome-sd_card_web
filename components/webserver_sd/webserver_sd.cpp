@@ -28,20 +28,19 @@ bool SDFileServer::canHandle(AsyncWebServerRequest *request) const {
 }
 
 void SDFileServer::handleRequest(AsyncWebServerRequest *request) {
-  if (str_startswith(std::string(request->url().c_str()), this->build_prefix())) {
-    if (request->method() == HTTP_GET) {
-      this->handle_get(request);
-      return;
-    }
-    // is blocked by upstream calls, use HTTP post with ?delete instead
-    // if (request->method() == HTTP_DELETE) {
-    //  this->handle_delete(request);
-    //  return;
-    //}
+  if (!str_startswith(std::string(request->url().c_str()), this->build_prefix()))
+    return;
 
-    if (method == HTTP_POST) {
-      
-    // Detect ?delete (or &delete, delete=1, etc.)
+  auto method = request->method();
+  std::string url = request->url().c_str();
+
+  if (method == HTTP_GET) {
+    this->handle_get(request);
+    return;
+  }
+
+  if (method == HTTP_POST) {
+    // workaround for delte Detect ?delete (or &delete, delete=1, etc.)
     auto qpos = url.find('?');
     if (qpos != std::string::npos) {
       std::string query = url.substr(qpos + 1);
@@ -59,8 +58,8 @@ void SDFileServer::handleRequest(AsyncWebServerRequest *request) {
     // otherwise normal POST handling (uploads via handleUpload)
     return;
   }
-  }
 }
+
 
 void SDFileServer::handleUpload(AsyncWebServerRequest *request, const std::string &filename, size_t index, uint8_t *data, size_t len, bool final) {
   if (!this->upload_enabled_) {
