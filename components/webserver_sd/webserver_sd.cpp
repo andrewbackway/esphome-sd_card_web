@@ -250,53 +250,30 @@ void SDFileServer::handle_download(AsyncWebServerRequest* request,
     return;
   }
 
-  // Use direct read for small files (< 24KB), streaming for larger files
-  const size_t STREAM_THRESHOLD = 24 * 1024; // 24KB - conservative threshold
+  // For ESP-IDF, we must read the entire file into memory
+  // AsyncResponseStream doesn't support true streaming - it buffers everything
+  // Check if we have enough memory before attempting
+  size_t free_heap = esp_get_free_heap_size();
+  size_t required_memory = file_size + 4096;
   
-  if (file_size < STREAM_THRESHOLD) {
-    // Small file - read directly into memory
-    ESP_LOGD(TAG, "Direct read for small file: %u bytes", file_size);
-    auto file = this->sd_mmc_->read_file(path);
-    if (file.size() == 0) {
-      request->send(500, "application/json",
-                    "{ \"error\": \"failed to read file\" }");
-      return;
-    }
-
-#ifdef USE_ESP_IDF
-    auto* response = request->beginResponse(200, Path::mime_type(path).c_str(),
-                                            file.data(), file.size());
-#else
-    auto* response =
-        request->beginResponseStream(Path::mime_type(path).c_str(), file.size());
-    response->write(file.data(), file.size());
-#endif
-    request->send(response);
-  } else {
-    // Large file - use chunked streaming
-    ESP_LOGD(TAG, "Chunked streaming for large file: %u bytes", file_size);
-    
-    size_t free_heap = esp_get_free_heap_size();
-    ESP_LOGD(TAG, "Free heap before streaming: %u bytes", free_heap);
-    
-    auto* response = request->beginResponseStream(Path::mime_type(path).c_str());
-    
-    bool success = this->sd_mmc_->stream_file(path.c_str(), 
-      [&response](const uint8_t *data, size_t len) -> bool {
-        response->write(data, len);
-        return true;
-      }, 4096); // 4KB chunks
-    
-    if (!success) {
-      ESP_LOGE(TAG, "Failed to stream file");
-      // Response already started, can't send error code
-    }
-    
-    request->send(response);
-    
-    free_heap = esp_get_free_heap_size();
-    ESP_LOGD(TAG, "Free heap after streaming: %u bytes", free_heap);
+  if (required_memory > free_heap) {
+    ESP_LOGE(TAG, "Insufficient memory for download. File: %u bytes, Free heap: %u bytes", file_size, free_heap);
+    request->send(507, "application/json",
+                  "{ \"error\": \"insufficient memory to serve file\" }");
+    return;
   }
+
+  ESP_LOGD(TAG, "Reading file for download: %u bytes (free heap: %u)", file_size, free_heap);
+  auto file = this->sd_mmc_->read_file(path);
+  if (file.size() == 0) {
+    request->send(500, "application/json",
+                  "{ \"error\": \"failed to read file\" }");
+    return;
+  }
+
+  auto* response = request->beginResponse(200, Path::mime_type(path).c_str(),
+                                          file.data(), file.size());
+  request->send(response);
 }
 
 void SDFileServer::handle_delete(AsyncWebServerRequest* request) {
