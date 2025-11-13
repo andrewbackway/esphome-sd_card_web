@@ -279,10 +279,10 @@ void SDFileServer::handle_download(AsyncWebServerRequest* request,
     size_t free_heap = esp_get_free_heap_size();
     ESP_LOGD(TAG, "Free heap before streaming: %u bytes", free_heap);
     
-    auto* response = request->beginResponseStream(Path::mime_type(path).c_str(), file_size);
+    auto* response = request->beginResponseStream(Path::mime_type(path).c_str());
     
     bool success = this->sd_mmc_->stream_file(path.c_str(), 
-      [response](const uint8_t *data, size_t len) -> bool {
+      [&response](const uint8_t *data, size_t len) -> bool {
         response->write(data, len);
         return true;
       }, 4096); // 4KB chunks
