@@ -213,8 +213,8 @@ std::vector<uint8_t> SdMmc::read_file(const char *path) {
     return std::vector<uint8_t>();
   }
   
-  if (fileSize > 20480) { // 20KB limit to prevent excessive memory usage
-    ESP_LOGW(TAG, "read_file: File too large (%u bytes). Max allowed: 20480 bytes. Use stream_file() for large files.", fileSize);
+  if (fileSize > 102400) { // 100KB limit to prevent excessive memory usage
+    ESP_LOGW(TAG, "read_file: File too large (%u bytes). Max allowed: 102400 bytes. Use stream_file() for large files.", fileSize);
     fclose(file);
     return std::vector<uint8_t>();
   }
