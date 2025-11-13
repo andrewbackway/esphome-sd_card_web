@@ -310,58 +310,6 @@ void SDFileServer::handle_download_buffered(AsyncWebServerRequest* request,
   ESP_LOGI(TAG, "handle_download_buffered: Response sent. Final free heap: %u", esp_get_free_heap_size());
 }
 
-void SDFileServer::handle_download_streaming(AsyncWebServerRequest* request,
-                                        const std::string& path,
-                                        const std::string& mime,
-                                        size_t file_size) const {
-  ESP_LOGI(TAG, "handle_download_streaming: Setting up streaming for '%s' (%u bytes)", path.c_str(), file_size);
-
-  // Open file for streaming
-  std::string absolut_path = this->sd_mmc_->build_path(path);
-  FILE* file = fopen(absolut_path.c_str(), "rb");
-  if (file == nullptr) {
-    ESP_LOGE(TAG, "handle_download_streaming: Failed to open file '%s': %s", path.c_str(), strerror(errno));
-    request->send(500, "application/json", "{ \"error\": \"failed to open file\" }");
-    return;
-  }
-
-  // Create streaming response with callback
-  // Capture file by value to avoid lambda capture issues (as per ESPAsyncWebServer PR)
-  AsyncWebServerResponse* response = static_cast<AsyncWebServerRequest*>(request)->beginResponse(
-      mime.c_str(),
-      file_size,
-      [file, file_size, path](uint8_t* buffer, size_t maxLen, size_t total) mutable -> size_t {
-        if (file == nullptr) {
-          ESP_LOGE("sd_file_server", "handle_download_streaming: File handle is null");
-          return 0;
-        }
-
-        // Read chunk
-        size_t bytes_read = fread(buffer, 1, maxLen, file);
-        
-        // Check for read error
-        if (bytes_read == 0 && ferror(file)) {
-          ESP_LOGE("sd_file_server", "handle_download_streaming: Read error for '%s': %s", path.c_str(), strerror(errno));
-          fclose(file);
-          file = nullptr;
-          return 0;
-        }
-
-        // Close file when done
-        if (total + bytes_read >= file_size) {
-          ESP_LOGD("sd_file_server", "handle_download_streaming: Closing file after reading %u bytes", total + bytes_read);
-          fclose(file);
-          file = nullptr;
-        }
-
-        return bytes_read;
-      }
-  );
-
-  ESP_LOGI(TAG, "handle_download_streaming: Sending streaming response for '%s'", path.c_str());
-  request->send(response);
-}
-
 void SDFileServer::handle_delete(AsyncWebServerRequest* request) {
   if (!this->deletion_enabled_) {
     request->send(401, "application/json",
