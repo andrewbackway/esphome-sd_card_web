@@ -187,38 +187,64 @@ bool SdMmc::delete_file(const char *path) {
 bool SdMmc::delete_file(std::string const &path) { return this->delete_file(path.c_str()); }
 
 std::vector<uint8_t> SdMmc::read_file(const char *path) {
-  ESP_LOGV(TAG, "Reading file: %s", path);
+  ESP_LOGI(TAG, "read_file: Starting read of '%s'", path);
   std::string absolut_path = build_path(path);
   FILE *file = fopen(absolut_path.c_str(), "rb");
   if (file == nullptr) {
-    ESP_LOGE(TAG, "Failed to open file: %s", strerror(errno));
+    ESP_LOGE(TAG, "read_file: Failed to open file '%s': %s", path, strerror(errno));
     return std::vector<uint8_t>();
   }
 
-  std::vector<uint8_t> res;
   size_t fileSize = this->file_size(path);
   
   // Check if we have enough heap memory before attempting allocation
+  // Note: ESP32 heap fragmentation can make free heap unreliable.
+  // The 8KB margin is conservative but may not prevent all OOM cases.
   size_t free_heap = esp_get_free_heap_size();
-  size_t required_memory = fileSize + 4096; // Add safety margin
+  size_t required_memory = fileSize + 8192; // Safety margin for fragmentation
+  
+  ESP_LOGI(TAG, "read_file: File size: %u bytes, Free heap: %u bytes, Required: %u bytes", 
+           fileSize, free_heap, required_memory);
   
   if (required_memory > free_heap) {
-    ESP_LOGE(TAG, "Insufficient memory to read file. Size: %u, Free heap: %u", fileSize, free_heap);
+    ESP_LOGE(TAG, "read_file: Insufficient memory. Size: %u, Free heap: %u, Shortfall: %d", 
+             fileSize, free_heap, (int)(required_memory - free_heap));
     fclose(file);
     return std::vector<uint8_t>();
   }
   
-  if (fileSize > 30720) { // 30KB threshold - warn about large direct reads
-    ESP_LOGW(TAG, "Reading large file (%u bytes) into memory. Consider using stream_file() instead.", fileSize);
-  }
-  
-  res.resize(fileSize);
-  size_t len = fread(res.data(), 1, fileSize, file);
-  fclose(file);
-  if (len < 0) {
-    ESP_LOGE(TAG, "Failed to read file: %s", strerror(errno));
+  if (fileSize > 20480) { // 20KB limit to prevent excessive memory usage
+    ESP_LOGW(TAG, "read_file: File too large (%u bytes). Max allowed: 20480 bytes. Use stream_file() for large files.", fileSize);
+    fclose(file);
     return std::vector<uint8_t>();
   }
+  
+  std::vector<uint8_t> res;
+  
+  // Try to reserve/resize with exception handling for allocation failure
+  ESP_LOGD(TAG, "read_file: Attempting to allocate %u bytes...", fileSize);
+  try {
+    res.resize(fileSize);
+    ESP_LOGD(TAG, "read_file: Memory allocation successful");
+  } catch (const std::bad_alloc& e) {
+    ESP_LOGE(TAG, "read_file: Memory allocation FAILED for %u bytes (free heap: %u). Heap fragmentation issue.", 
+             fileSize, free_heap);
+    fclose(file);
+    return std::vector<uint8_t>();
+  }
+  
+  size_t len = fread(res.data(), 1, fileSize, file);
+  
+  if (len != fileSize) {
+    ESP_LOGE(TAG, "read_file: Failed to read file: expected %u bytes, got %u. Error: %s", fileSize, len, strerror(errno));
+    fclose(file);
+    return std::vector<uint8_t>();
+  }
+  
+  fclose(file);
+  
+  ESP_LOGI(TAG, "read_file: Successfully read %u bytes from '%s'. Free heap now: %u", 
+           len, path, esp_get_free_heap_size());
 
   return res;
 }
