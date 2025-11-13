@@ -90,6 +90,23 @@ class SdMmc : public Component {
 
   std::string build_path(const std::string &path) const;
   std::string sd_card_type() const;
+
+ protected:
+  ErrorCode init_error_;
+  uint8_t clk_pin_;
+  uint8_t cmd_pin_;
+  uint8_t data0_pin_;
+  uint8_t data1_pin_;
+  uint8_t data2_pin_;
+  uint8_t data3_pin_;
+  bool mode_1bit_;
+  GPIOPin *power_ctrl_pin_{nullptr};
+
+  sdmmc_card_t *card_;
+#ifdef USE_SENSOR
+  std::vector<FileSizeSensor> file_size_sensors_{};
+#endif
+  void update_sensors();
   std::vector<FileInfo> &list_directory_file_info_rec(const char *path, uint8_t depth, std::vector<FileInfo> &list);
   static std::string error_code_to_string(ErrorCode);
 };
