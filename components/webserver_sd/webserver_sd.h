@@ -44,6 +44,8 @@ class SDFileServer : public Component, public AsyncWebHandler {
   void handle_get(AsyncWebServerRequest *request) const;
   void handle_delete(AsyncWebServerRequest *request);
   void handle_download(AsyncWebServerRequest *request, const std::string &path) const;
+  void handle_download_buffered(AsyncWebServerRequest *request, const std::string &path, const std::string &mime, size_t file_size) const;
+  void handle_download_streaming(AsyncWebServerRequest *request, const std::string &path, const std::string &mime, size_t file_size) const;
 };
 
 struct Path {

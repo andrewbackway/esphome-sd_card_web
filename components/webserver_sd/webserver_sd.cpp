@@ -269,16 +269,33 @@ void SDFileServer::handle_download(AsyncWebServerRequest* request,
     return;
   }
 
+  std::string mime = Path::mime_type(path);
+  ESP_LOGD(TAG, "handle_download: MIME type: %s", mime.c_str());
+
+  // Use streaming for files > 8KB to avoid large memory allocations
+  if (file_size > 8192) {
+    ESP_LOGI(TAG, "handle_download: Using streaming for large file (%u bytes)", file_size);
+    this->handle_download_streaming(request, path, mime, file_size);
+  } else {
+    ESP_LOGI(TAG, "handle_download: Using buffered download for small file (%u bytes)", file_size);
+    this->handle_download_buffered(request, path, mime, file_size);
+  }
+}
+
+void SDFileServer::handle_download_buffered(AsyncWebServerRequest* request,
+                                       const std::string& path,
+                                       const std::string& mime,
+                                       size_t file_size) const {
   size_t heap_before = esp_get_free_heap_size();
-  ESP_LOGI(TAG, "handle_download: Starting download. File: %u bytes, Free heap: %u bytes", 
+  ESP_LOGI(TAG, "handle_download_buffered: Starting download. File: %u bytes, Free heap: %u bytes", 
            file_size, heap_before);
   
-  auto file = this->sd_mmc_->read_file(path);
+  auto file_data = this->sd_mmc_->read_file(path);
   
-  if (file.size() == 0) {
+  if (file_data.size() == 0) {
     // read_file returns empty vector on allocation failure
     size_t heap_after = esp_get_free_heap_size();
-    ESP_LOGE(TAG, "handle_download: Read failed for '%s'. Heap before: %u, after: %u", 
+    ESP_LOGE(TAG, "handle_download_buffered: Read failed for '%s'. Heap before: %u, after: %u", 
              path.c_str(), heap_before, heap_after);
     request->send(507, "application/json",
                   "{ \"error\": \"insufficient memory to serve file\" }");
@@ -286,19 +303,68 @@ void SDFileServer::handle_download(AsyncWebServerRequest* request,
   }
 
   size_t heap_after_read = esp_get_free_heap_size();
-  ESP_LOGI(TAG, "handle_download: Read successful. Size: %u bytes, Heap before: %u, after: %u, used: %d",
-           file.size(), heap_before, heap_after_read, (int)(heap_before - heap_after_read));
+  ESP_LOGI(TAG, "handle_download_buffered: Read successful. Size: %u bytes, Heap before: %u, after: %u, used: %d",
+           file_data.size(), heap_before, heap_after_read, (int)(heap_before - heap_after_read));
   
-  std::string mime = Path::mime_type(path);
-  ESP_LOGD(TAG, "handle_download: Creating response with MIME type: %s", mime.c_str());
+  auto* response = request->beginResponse(200, mime.c_str(), file_data.data(), file_data.size());
   
-  auto* response = request->beginResponse(200, mime.c_str(), file.data(), file.size());
-  
-  ESP_LOGI(TAG, "handle_download: Sending response for '%s'", path.c_str());
+  ESP_LOGI(TAG, "handle_download_buffered: Sending response for '%s'", path.c_str());
   request->send(response);
   
   // Note: Heap may not be freed immediately due to async response handling
-  ESP_LOGI(TAG, "handle_download: Response sent. Final free heap: %u", esp_get_free_heap_size());
+  ESP_LOGI(TAG, "handle_download_buffered: Response sent. Final free heap: %u", esp_get_free_heap_size());
+}
+
+void SDFileServer::handle_download_streaming(AsyncWebServerRequest* request,
+                                        const std::string& path,
+                                        const std::string& mime,
+                                        size_t file_size) const {
+  ESP_LOGI(TAG, "handle_download_streaming: Setting up streaming for '%s' (%u bytes)", path.c_str(), file_size);
+
+  // Open file for streaming
+  std::string absolut_path = this->sd_mmc_->build_path(path);
+  FILE* file = fopen(absolut_path.c_str(), "rb");
+  if (file == nullptr) {
+    ESP_LOGE(TAG, "handle_download_streaming: Failed to open file '%s': %s", path.c_str(), strerror(errno));
+    request->send(500, "application/json", "{ \"error\": \"failed to open file\" }");
+    return;
+  }
+
+  // Create streaming response with callback
+  // Capture file by value to avoid lambda capture issues (as per ESPAsyncWebServer PR)
+  AsyncWebServerResponse* response = request->beginResponse(
+      mime.c_str(),
+      file_size,
+      [file, file_size, path](uint8_t* buffer, size_t maxLen, size_t total) mutable -> size_t {
+        if (file == nullptr) {
+          ESP_LOGE("sd_file_server", "handle_download_streaming: File handle is null");
+          return 0;
+        }
+
+        // Read chunk
+        size_t bytes_read = fread(buffer, 1, maxLen, file);
+        
+        // Check for read error
+        if (bytes_read == 0 && ferror(file)) {
+          ESP_LOGE("sd_file_server", "handle_download_streaming: Read error for '%s': %s", path.c_str(), strerror(errno));
+          fclose(file);
+          file = nullptr;
+          return 0;
+        }
+
+        // Close file when done
+        if (total + bytes_read >= file_size) {
+          ESP_LOGD("sd_file_server", "handle_download_streaming: Closing file after reading %u bytes", total + bytes_read);
+          fclose(file);
+          file = nullptr;
+        }
+
+        return bytes_read;
+      }
+  );
+
+  ESP_LOGI(TAG, "handle_download_streaming: Sending streaming response for '%s'", path.c_str());
+  request->send(response);
 }
 
 void SDFileServer::handle_delete(AsyncWebServerRequest* request) {
