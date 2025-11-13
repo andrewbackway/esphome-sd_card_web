@@ -74,7 +74,7 @@ void SdMmc::setup() {
 
 #ifdef USE_TEXT_SENSOR
   if (this->sd_card_type_text_sensor_ != nullptr)
-    this->sd_card_type_text_sensor_->publish_state(sd_card_type());
+    this->sd_card_type_text_sensor_->publish_state(this->sd_card_type());
 #endif
 
   update_sensors();
@@ -221,17 +221,16 @@ std::vector<uint8_t> SdMmc::read_file(const char *path) {
   
   std::vector<uint8_t> res;
   
-  // Try to reserve/resize with exception handling for allocation failure
+  // Try to reserve/resize - check if allocation succeeded
   ESP_LOGD(TAG, "read_file: Attempting to allocate %u bytes...", fileSize);
-  try {
-    res.resize(fileSize);
-    ESP_LOGD(TAG, "read_file: Memory allocation successful");
-  } catch (const std::bad_alloc& e) {
+  res.resize(fileSize);
+  if (res.size() != fileSize) {
     ESP_LOGE(TAG, "read_file: Memory allocation FAILED for %u bytes (free heap: %u). Heap fragmentation issue.", 
              fileSize, free_heap);
     fclose(file);
     return std::vector<uint8_t>();
   }
+  ESP_LOGD(TAG, "read_file: Memory allocation successful");
   
   size_t len = fread(res.data(), 1, fileSize, file);
   

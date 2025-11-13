@@ -105,8 +105,8 @@ class SdMmc : public Component {
 #endif
   void update_sensors();
   std::string build_path(const std::string &path) const;
+  std::string sd_card_type() const;
   std::vector<FileInfo> &list_directory_file_info_rec(const char *path, uint8_t depth, std::vector<FileInfo> &list);
-  static std::string error_code_to_string(ErrorCode);
 };
 
 template<typename... Ts> class SdMmcWriteFileAction : public Action<Ts...> {
