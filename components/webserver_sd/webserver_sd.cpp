@@ -243,23 +243,60 @@ void SDFileServer::handle_download(AsyncWebServerRequest* request,
     return;
   }
 
-  auto file = this->sd_mmc_->read_file(path);
-  if (file.size() == 0) {
-    request->send(401, "application/json",
-                  "{ \"error\": \"failed to read file\" }");
+  size_t file_size = this->sd_mmc_->file_size(path);
+  if (file_size == 0 || file_size == static_cast<size_t>(-1)) {
+    request->send(404, "application/json",
+                  "{ \"error\": \"file not found or empty\" }");
     return;
   }
 
-#ifdef USE_ESP_IDF
-  auto* response = request->beginResponse(200, Path::mime_type(path).c_str(),
-                                          file.data(), file.size());
-#else
-  auto* response =
-      request->beginResponseStream(Path::mime_type(path).c_str(), file.size());
-  response->write(file.data(), file.size());
-#endif
+  // Use direct read for small files (< 24KB), streaming for larger files
+  const size_t STREAM_THRESHOLD = 24 * 1024; // 24KB - conservative threshold
+  
+  if (file_size < STREAM_THRESHOLD) {
+    // Small file - read directly into memory
+    ESP_LOGD(TAG, "Direct read for small file: %u bytes", file_size);
+    auto file = this->sd_mmc_->read_file(path);
+    if (file.size() == 0) {
+      request->send(500, "application/json",
+                    "{ \"error\": \"failed to read file\" }");
+      return;
+    }
 
-  request->send(response);
+#ifdef USE_ESP_IDF
+    auto* response = request->beginResponse(200, Path::mime_type(path).c_str(),
+                                            file.data(), file.size());
+#else
+    auto* response =
+        request->beginResponseStream(Path::mime_type(path).c_str(), file.size());
+    response->write(file.data(), file.size());
+#endif
+    request->send(response);
+  } else {
+    // Large file - use chunked streaming
+    ESP_LOGD(TAG, "Chunked streaming for large file: %u bytes", file_size);
+    
+    size_t free_heap = esp_get_free_heap_size();
+    ESP_LOGD(TAG, "Free heap before streaming: %u bytes", free_heap);
+    
+    auto* response = request->beginResponseStream(Path::mime_type(path).c_str(), file_size);
+    
+    bool success = this->sd_mmc_->stream_file(path.c_str(), 
+      [response](const uint8_t *data, size_t len) -> bool {
+        response->write(data, len);
+        return true;
+      }, 4096); // 4KB chunks
+    
+    if (!success) {
+      ESP_LOGE(TAG, "Failed to stream file");
+      // Response already started, can't send error code
+    }
+    
+    request->send(response);
+    
+    free_heap = esp_get_free_heap_size();
+    ESP_LOGD(TAG, "Free heap after streaming: %u bytes", free_heap);
+  }
 }
 
 void SDFileServer::handle_delete(AsyncWebServerRequest* request) {

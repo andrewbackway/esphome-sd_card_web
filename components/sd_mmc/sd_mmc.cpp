@@ -197,6 +197,21 @@ std::vector<uint8_t> SdMmc::read_file(const char *path) {
 
   std::vector<uint8_t> res;
   size_t fileSize = this->file_size(path);
+  
+  // Check if we have enough heap memory before attempting allocation
+  size_t free_heap = esp_get_free_heap_size();
+  size_t required_memory = fileSize + 4096; // Add safety margin
+  
+  if (required_memory > free_heap) {
+    ESP_LOGE(TAG, "Insufficient memory to read file. Size: %u, Free heap: %u", fileSize, free_heap);
+    fclose(file);
+    return std::vector<uint8_t>();
+  }
+  
+  if (fileSize > 30720) { // 30KB threshold - warn about large direct reads
+    ESP_LOGW(TAG, "Reading large file (%u bytes) into memory. Consider using stream_file() instead.", fileSize);
+  }
+  
   res.resize(fileSize);
   size_t len = fread(res.data(), 1, fileSize, file);
   fclose(file);
@@ -209,6 +224,56 @@ std::vector<uint8_t> SdMmc::read_file(const char *path) {
 }
 
 std::vector<uint8_t> SdMmc::read_file(std::string const &path) { return this->read_file(path.c_str()); }
+
+size_t SdMmc::read_file_chunk(const char *path, size_t offset, uint8_t *buffer, size_t buffer_size) {
+  std::string absolut_path = build_path(path);
+  FILE *file = fopen(absolut_path.c_str(), "rb");
+  if (file == nullptr) {
+    ESP_LOGE(TAG, "Failed to open file for chunk read: %s", strerror(errno));
+    return 0;
+  }
+
+  if (fseek(file, offset, SEEK_SET) != 0) {
+    ESP_LOGE(TAG, "Failed to seek to offset %u: %s", offset, strerror(errno));
+    fclose(file);
+    return 0;
+  }
+
+  size_t bytes_read = fread(buffer, 1, buffer_size, file);
+  fclose(file);
+  return bytes_read;
+}
+
+bool SdMmc::stream_file(const char *path, FileChunkCallback callback, size_t chunk_size) {
+  ESP_LOGV(TAG, "Streaming file: %s with chunk size: %u", path, chunk_size);
+  std::string absolut_path = build_path(path);
+  FILE *file = fopen(absolut_path.c_str(), "rb");
+  if (file == nullptr) {
+    ESP_LOGE(TAG, "Failed to open file for streaming: %s", strerror(errno));
+    return false;
+  }
+
+  uint8_t *buffer = new (std::nothrow) uint8_t[chunk_size];
+  if (buffer == nullptr) {
+    ESP_LOGE(TAG, "Failed to allocate chunk buffer of %u bytes", chunk_size);
+    fclose(file);
+    return false;
+  }
+
+  bool success = true;
+  size_t bytes_read;
+  while ((bytes_read = fread(buffer, 1, chunk_size, file)) > 0) {
+    if (!callback(buffer, bytes_read)) {
+      ESP_LOGW(TAG, "Callback returned false, stopping stream");
+      success = false;
+      break;
+    }
+  }
+
+  delete[] buffer;
+  fclose(file);
+  return success;
+}
 
 std::vector<FileInfo> &SdMmc::list_directory_file_info_rec(const char *path, uint8_t depth,
                                                            std::vector<FileInfo> &list) {
