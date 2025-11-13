@@ -1,5 +1,6 @@
 #include "webserver_sd.h"
 
+#include <ESPAsyncWebServer.h>
 #include <map>
 
 #include "esphome/components/network/util.h"
@@ -262,8 +263,8 @@ void SDFileServer::handle_download(AsyncWebServerRequest* request,
     return;
   }
 
-  if (file_size > 20480) { // 20KB limit
-    ESP_LOGE(TAG, "handle_download: File too large: %u bytes (max 20480)", file_size);
+  if (file_size > 102400) { // 100KB limit
+    ESP_LOGE(TAG, "handle_download: File too large: %u bytes (max 102400)", file_size);
     request->send(413, "application/json",
                   "{ \"error\": \"file too large\" }");
     return;
@@ -272,14 +273,9 @@ void SDFileServer::handle_download(AsyncWebServerRequest* request,
   std::string mime = Path::mime_type(path);
   ESP_LOGD(TAG, "handle_download: MIME type: %s", mime.c_str());
 
-  // Use streaming for files > 8KB to avoid large memory allocations
-  if (file_size > 8192) {
-    ESP_LOGI(TAG, "handle_download: Using streaming for large file (%u bytes)", file_size);
-    this->handle_download_streaming(request, path, mime, file_size);
-  } else {
-    ESP_LOGI(TAG, "handle_download: Using buffered download for small file (%u bytes)", file_size);
-    this->handle_download_buffered(request, path, mime, file_size);
-  }
+  // Use buffered download for all files within limit
+  ESP_LOGI(TAG, "handle_download: Using buffered download for file (%u bytes)", file_size);
+  this->handle_download_buffered(request, path, mime, file_size);
 }
 
 void SDFileServer::handle_download_buffered(AsyncWebServerRequest* request,
@@ -332,7 +328,7 @@ void SDFileServer::handle_download_streaming(AsyncWebServerRequest* request,
 
   // Create streaming response with callback
   // Capture file by value to avoid lambda capture issues (as per ESPAsyncWebServer PR)
-  AsyncWebServerResponse* response = request->beginResponse(
+  AsyncWebServerResponse* response = static_cast<AsyncWebServerRequest*>(request)->beginResponse(
       mime.c_str(),
       file_size,
       [file, file_size, path](uint8_t* buffer, size_t maxLen, size_t total) mutable -> size_t {
